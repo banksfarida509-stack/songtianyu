@@ -88,4 +88,11 @@ test('suggestReply without LLM: time request books a slot, salary hands off', as
   assert.equal(d1.blocked, false, JSON.stringify(d1.checks));
   const d2 = await suggestReply({ slots: {} }, [{ dir: 'in', text: '工资能保证一万吗' }], { settings, db, appt: null });
   assert.equal(d2.handoff, true);
+  const d3 = await suggestReply({ slots: {} }, [{ dir: 'in', text: '你是机器人吗？' }], { settings, db, appt: null });
+  assert.equal(d3.handoff, false);
+  assert.match(d3.reply, /AI/);
+  const d4 = await suggestReply({ slots: {} }, [{ dir: 'in', text: '我要找真人聊' }], { settings, db, appt: null });
+  assert.equal(d4.handoff, true);
+  const d5 = await suggestReply({ slots: {} }, [{ dir: 'in', text: '学校在哪？' }], { settings, db, appt: null });
+  assert.match(d5.reply, /学校本部/);
 });

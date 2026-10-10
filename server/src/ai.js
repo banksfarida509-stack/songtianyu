@@ -47,6 +47,7 @@ const INTENTS = ['提问', '提供信息', '约面时间', '确认参加', '改�
 
 function fallbackIntent(text) {
   if (/真人|机器人|人工/.test(text)) return '要求真人';
+  if (/在哪|地址|地点|位置/.test(text)) return '提问';
   if (/工资|薪资|待遇|多少钱|保证.*万/.test(text)) return '议价';
   if (/微信|电话|手机号/.test(text)) return '交换联系方式';
   if (/改|换个时间|有事|去不了/.test(text)) return '改期';
@@ -86,10 +87,15 @@ export async function suggestReply(candidate, history, ctx) {
 只输出 JSON：{"intent":"${INTENTS.join('|')}","slots":{"cert":"有/没有/在考/null","arrive":"到岗时间或null","day":"YYYY-MM-DD 或 null","half":"am/pm/any/null"},"reply":"给候选人的回复","kb":["引用的知识库编号"]}`;
     const msgs = [{ role: 'system', content: sys }];
     for (const m of history.slice(-12)) msgs.push({ role: m.dir === 'in' ? 'user' : 'assistant', content: clip(m.text, 300) });
-    try {
-      const r = await chat(settings.ai, msgs, { maxTokens: 400, temperature: 0.3 });
-      ai = parseJson(r.content); model = r.model;
-    } catch (e) { err = e.message; }
+    // one retry with the providers swapped: covers transient gateway errors and non-JSON output
+    const swapped = { ...settings.ai, provider: settings.ai.fallbackProvider, model: settings.ai.fallbackModel, fallbackProvider: settings.ai.provider, fallbackModel: settings.ai.model };
+    for (const cfg of [settings.ai, swapped]) {
+      try {
+        const r = await chat(cfg, msgs, { maxTokens: 400, temperature: 0.3 });
+        ai = parseJson(r.content); model = r.model; err = null;
+        if (ai && typeof ai.reply === 'string') break;
+      } catch (e) { err = e.message; console.error('[ai] suggest failed:', clip(e.message, 200)); }
+    }
   }
   const intent = INTENTS.includes(ai?.intent) ? ai.intent : fallbackIntent(lastText);
   const newSlots = {};
@@ -128,9 +134,17 @@ export async function suggestReply(candidate, history, ctx) {
   } else if (intent === '交换联系方式') {
     reply = '可以的，我发一个交换微信的请求，你点同意就行。';
     action = '换微信';
-  } else if (intent === '议价' || intent === '要求真人') {
-    handoff = true; handoffWhy = intent === '议价' ? '候选人议价' : '候选人要求真人';
-    reply = reply || '这个问题我请招聘老师直接和你沟通。';
+  } else if (intent === '议价') {
+    handoff = true; handoffWhy = '候选人议价';
+    reply = reply || '薪资按经验定级，这个问题我请招聘老师直接和你沟通。';
+  } else if (intent === '要求真人') {
+    // “你是机器人吗” → answer honestly; only an explicit ask for a person hands off
+    if (/真人|人工|转.*老师|找.*(老师|负责人|领导)/.test(lastText)) { handoff = true; handoffWhy = '候选人要求真人'; reply = reply || '好的，我马上请招聘老师来和你聊。'; }
+    else reply = reply || `是的，我是${org.persona}，需要的话可以随时转招聘老师。`;
+  }
+  if (!reply && /在哪|地址|地点|位置/.test(lastText)) {
+    const k = kb.find(x => /地点|地址/.test(x.q));
+    if (k) reply = `${k.a}想先了解一下：你有教师资格证吗？`;
   }
   if (!reply) reply = '收到，想先了解一下：你有教师资格证吗？最早什么时候能到岗？';
 
