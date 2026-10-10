@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>AI 招聘副驾 · 设置</title>
+<style>
+body{font:13px/1.6 "PingFang SC","Microsoft YaHei",system-ui,sans-serif;color:#1F2329;margin:0;padding:16px;width:340px}
+h1{font-size:15px;margin:0 0 10px;color:#D0161F}
+label{display:block;margin:8px 0 3px;color:#41464F}
+input{width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #E6E8EC;border-radius:6px;font:inherit}
+button{margin-top:12px;background:#D0161F;color:#fff;border:0;border-radius:6px;padding:7px 14px;font:inherit;cursor:pointer}
+p{color:#7A808A;font-size:12px}
+#st{margin-top:10px;font-size:12px}
+</style></head>
+<body>
+<h1>AI 招聘副驾</h1>
+<p>从后台“设置”下载的插件已内置以下两项；只有服务器地址变化时才需要在这里修改。</p>
+<label for="server">服务器地址（例：http://101.201.77.185/hr）</label><input id="server">
+<label for="token">插件令牌</label><input id="token" type="password">
+<button id="save">保存并测试</button>
+<div id="st"></div>
+<script src="config.js"></script>
+<script src="options.js"></script>
+</body></html>
