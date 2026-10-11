@@ -136,6 +136,15 @@ export function openDb(file) {
   if (!ccols.includes('role_manual')) db.exec('ALTER TABLE candidates ADD COLUMN role_manual INTEGER NOT NULL DEFAULT 0');
   // the candidate's mobile number once the platform shows it to the recruiter (exchange / message / unlocked resume)
   if (!ccols.includes('phone')) db.exec('ALTER TABLE candidates ADD COLUMN phone TEXT');
+  // attachment resume: 未索要 / 已索要 / 已收到, and the talent reserve (人才库) flag
+  if (!ccols.includes('resume_status')) db.exec("ALTER TABLE candidates ADD COLUMN resume_status TEXT NOT NULL DEFAULT '未索要'");
+  if (!ccols.includes('resume_at')) db.exec('ALTER TABLE candidates ADD COLUMN resume_at TEXT');
+  if (!ccols.includes('reserve')) {
+    db.exec('ALTER TABLE candidates ADD COLUMN reserve INTEGER NOT NULL DEFAULT 0');
+    // resumes already received in past chats go straight into the reserve
+    db.exec(`UPDATE candidates SET resume_status='已收到', reserve=1, resume_at=(SELECT MIN(at) FROM messages m WHERE m.candidate_id=candidates.id AND m.dir='in' AND m.text LIKE '[卡片·附件简历]%')
+      WHERE id IN (SELECT candidate_id FROM messages WHERE dir='in' AND text LIKE '[卡片·附件简历]%')`);
+  }
   dedupeBossIds(db);
   // job roles: each candidate and each knowledge-base document belongs to a role (通用 = all)
   if (!db.prepare('PRAGMA table_info(candidates)').all().some(c => c.name === 'role')) db.exec("ALTER TABLE candidates ADD COLUMN role TEXT NOT NULL DEFAULT 'teacher'");

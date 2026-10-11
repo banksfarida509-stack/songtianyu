@@ -88,6 +88,7 @@ function candOut(c, full = false) {
     major: c.major, years: c.years, careerStatus: c.career_status, expect: c.expect, job: c.job,
     verdict: c.verdict, score: c.score, reason: c.reason, reasonBy: c.reason_by, attend: c.attend, handoff: !!c.handoff,
     role: c.role || 'teacher', roleName: (getSetting(db, 'roles')[c.role || 'teacher'] || {}).name || '教师', roleManual: !!c.role_manual, staffNote: c.staff_note || '', phone: c.phone || '',
+    resumeStatus: c.resume_status || '未索要', resumeAt: c.resume_at || null, reserve: !!c.reserve,
     pref: j(c.pref_json, {}), slots: j(c.slots_json, {}), lastNote: c.last_note, source: c.source, owner: c.owner,
     isDemo: !!c.is_demo, createdAt: c.created_at, updatedAt: c.updated_at, appt: appt || null,
   };
@@ -263,6 +264,16 @@ route('POST', '/api/ext/followup/draft', 'ext', async (req, res) => {
   send(res, 200, { candidateId: c.id, draft, decision, kind });
 });
 
+// result of clicking the platform's “要附件简历 / 求简历” button
+route('POST', '/api/ext/chat/resume', 'ext', async (req, res) => {
+  const b = await body(req);
+  const c = getCand(Number(b.candidateId));
+  if (!c) return fail(res, 404, '候选人不存在');
+  if (b.ok && c.resume_status === '未索要') db.prepare("UPDATE candidates SET resume_status='已索要' WHERE id=?").run(c.id);
+  addEvent(db, c.id, b.ok ? '已通过平台按钮索要附件简历' : `平台“要附件简历”按钮未成功：${clip(b.msg, 60)}`);
+  send(res, 200, { ok: true });
+});
+
 // result of an automatic interview invitation
 route('POST', '/api/ext/chat/invited', 'ext', async (req, res) => {
   const b = await body(req);
@@ -400,6 +411,12 @@ function storeMessages(c, list) {
     if (!m || !m.text) continue;
     // a number the candidate sent us (typed or in an exchange card)
     if (m.dir === 'in') savePhone(c, m.text, '聊天中对方发来');
+    // an attachment resume arrived → mark it and put the candidate into the talent reserve
+    if (m.dir === 'in' && /^\[卡片·附件简历\]/.test(m.text) && c.resume_status !== '已收到') {
+      db.prepare("UPDATE candidates SET resume_status='已收到', resume_at=?, reserve=1 WHERE id=?").run(nowCN(), c.id);
+      c.resume_status = '已收到';
+      addEvent(db, c.id, '收到附件简历，已加入人才库');
+    }
     n += ins.run(c.id, m.dir === 'in' ? 'in' : 'out', m.dir === 'in' ? 'candidate' : 'staff', clip(m.text, 1000), String(m.id || crypto.createHash('md5').update(m.dir + m.text + (m.at || '')).digest('hex')), clip(m.at, 30) || nowCN()).changes;
   }
   return n;
@@ -483,6 +500,10 @@ route('POST', '/api/ext/chat/applied', 'ext', async (req, res) => {
   if (d.reply) db.prepare('INSERT INTO messages(candidate_id,dir,by,text,at) VALUES(?,?,?,?,?)').run(c.id, 'out', b.auto ? 'ai-auto' : 'ai', clip(d.reply, 1000), nowCN());
   if (b.auto) addEvent(db, c.id, `AI 全自动回复（${d.intent || ''}）`);
   if (d.followup && d.reply) { markFollowup(db, getCand(c.id), d.followup); addEvent(db, c.id, d.followup === 'greet' ? '打招呼未回复，已发跟进' : '已读未回复，已发跟进'); }
+  if (d.resumeAsk && d.reply && getCand(c.id).resume_status === '未索要') {
+    db.prepare("UPDATE candidates SET resume_status='已索要' WHERE id=?").run(c.id);
+    addEvent(db, c.id, '约聊中已索要附件简历');
+  }
   applyDraft(c, d);
   send(res, 200, { ok: true, candidate: candOut(getCand(c.id)) });
 });
@@ -542,6 +563,9 @@ route('GET', '/api/candidates', 'admin', (req, res, p, u, q) => {
   if (q.get('q')) { where.push("(name LIKE ? OR school LIKE ? OR major LIKE ? OR job LIKE ? OR staff_note LIKE ? OR phone LIKE ?)"); const v = `%${q.get('q')}%`; args.push(v, v, v, v, v, v); }
   // 岗位 filter (教师 / 学管师 / 课程顾问 / 其他) and 备注 filter (有备注 / 无备注 / a word in the note)
   if (q.get('role') && ROLE_KEYS.includes(q.get('role'))) { where.push("COALESCE(role,'teacher')=?"); args.push(q.get('role')); }
+  // 人才库（储备）and attachment-resume status
+  if (q.get('reserve') === '1') where.push('reserve=1');
+  if (['未索要', '已索要', '已收到'].includes(q.get('resume'))) { where.push('resume_status=?'); args.push(q.get('resume')); }
   const note = q.get('note') || '';
   if (note === 'has') where.push("TRIM(COALESCE(staff_note,''))!=''");
   else if (note === 'none') where.push("TRIM(COALESCE(staff_note,''))=''");
@@ -554,7 +578,9 @@ route('GET', '/api/candidates', 'admin', (req, res, p, u, q) => {
   const vcounts = Object.fromEntries(db.prepare('SELECT verdict, COUNT(*) n FROM candidates GROUP BY verdict').all().map(r => [r.verdict, r.n]));
   const rcounts = Object.fromEntries(db.prepare("SELECT COALESCE(role,'teacher') r, COUNT(*) n FROM candidates GROUP BY r").all().map(r => [r.r, r.n]));
   const ncount = db.prepare("SELECT COUNT(*) n FROM candidates WHERE TRIM(COALESCE(staff_note,''))!=''").get().n;
-  send(res, 200, { rows: rows.map(c => candOut(c)), counts, vcounts, rcounts, ncount });
+  const reserveCount = db.prepare('SELECT COUNT(*) n FROM candidates WHERE reserve=1').get().n;
+  const resumeCounts = Object.fromEntries(db.prepare('SELECT resume_status s, COUNT(*) n FROM candidates GROUP BY s').all().map(r => [r.s, r.n]));
+  send(res, 200, { rows: rows.map(c => candOut(c)), counts, vcounts, rcounts, ncount, reserveCount, resumeCounts });
 });
 route('GET', '/api/candidates/:id', 'admin', (req, res, p) => {
   const c = getCand(Number(p.id));
@@ -577,6 +603,14 @@ route('PATCH', '/api/candidates/:id', 'admin', async (req, res, p) => {
     addEvent(db, c.id, `专员改判：${b.verdict}${b.reason ? '（' + clip(b.reason, 40) + '）' : ''}`);
   }
   if (typeof b.note === 'string') db.prepare('UPDATE candidates SET last_note=? WHERE id=?').run(clip(b.note, 120), c.id);
+  if (typeof b.reserve === 'boolean') {
+    db.prepare('UPDATE candidates SET reserve=? WHERE id=?').run(b.reserve ? 1 : 0, c.id);
+    addEvent(db, c.id, b.reserve ? '加入人才库' : '移出人才库');
+  }
+  if (['未索要', '已索要', '已收到'].includes(b.resumeStatus)) {
+    db.prepare('UPDATE candidates SET resume_status=?, resume_at=CASE WHEN ?=\'已收到\' THEN COALESCE(resume_at, ?) ELSE resume_at END WHERE id=?').run(b.resumeStatus, b.resumeStatus, nowCN(), c.id);
+    addEvent(db, c.id, `附件简历状态改为：${b.resumeStatus}`);
+  }
   if (typeof b.phone === 'string') {
     const p = b.phone.trim();
     if (p && !mobileIn(p)) return fail(res, 400, '请输入 11 位手机号');

@@ -177,6 +177,7 @@
         b += ck(!d.checks.guard.length, '我方护栏' + (d.checks.guard.length ? '：' + d.checks.guard.join('、') : '')) + ck(!d.checks.platform.length, '平台拦截规则' + (d.checks.platform.length ? '：' + d.checks.platform.join('、') : ''));
         if (d.handoff) b += `<div class="hra-err">转人工：${esc(d.handoffWhy || '')}</div>`;
         if (d.action) b += `<div class="hra-act">需要在平台点「${esc(d.action)}」${d.slot ? `：${esc(d.slot.date)} ${esc(d.slot.slot)}` : ''}</div>`;
+        if (d.resumeAsk) b += `<div class="hra-act">这条回复会顺带索要附件简历，发送后自动点平台「${PLATFORM === 'boss' ? '求简历' : '要附件简历'}」</div>`;
         if (d.sentAuto) b += `<p class="hra-ok">已自动发送 ✓</p>`;
         else if (S.pending) b += `<div class="hra-cd">将在 <b id="hra-cd">${Math.max(0, Math.ceil((S.pending.due - Date.now()) / 1000))}</b> 秒后自动发送</div><div class="hra-row"><button class="hra-btn pri" data-a="send-now">立即发送</button><button class="hra-btn" data-a="cancel-auto">取消，我来处理</button></div>`;
         else if (S.sending) b += '<p class="hra-muted">正在发送…</p>';
@@ -425,6 +426,14 @@
       api('/ext/chat/invited', { candidateId: S.candidateId, ok: !!iv.ok, msg: iv.msg, shape: iv.shape || null });
       if (!iv.ok) addTodo('semi', `面试邀约没自动发出：${iv.msg}`);
     } else if (d.action) addTodo('semi', `已回复，需要你点「${d.action}」${d.slot ? ` ${d.slot.date} ${d.slot.slot}` : ''}`);
+    // the reply asked for the attachment resume → also press the platform's request button
+    if (d.resumeAsk) {
+      await sleep(1500 + Math.random() * 1500);
+      const rr = await callMain('askResume', {}, 'resumeResult', 15000);
+      log(`${S.chat?.name || ''}：${rr.msg}`);
+      api('/ext/chat/resume', { candidateId: S.candidateId, ok: !!rr.ok, msg: rr.msg });
+      if (!rr.ok) addTodo('semi', `附件简历请求没发出：${rr.msg}`);
+    }
     log(`${S.chat?.name || ''}：${auto ? '已全自动回复' : '已发送'}${r.error ? '（写入人才池失败：' + r.error + '）' : ''}`);
     S.handledAt = Date.now();
     if (S.auto) S.auto.sentLastHour = (S.auto.sentLastHour || 0) + (auto ? 1 : 0);

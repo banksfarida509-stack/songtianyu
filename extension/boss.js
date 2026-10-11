@@ -262,6 +262,24 @@
     post('historyResult', { reqId, ok: true, sessions: out, skipped });
   }
 
+  // ---------- ask for the attachment resume via the platform's own button (“求简历”) ----------
+  async function askResume(reqId) {
+    const before = messageRows().length;
+    const btn = [...document.querySelectorAll('button, span, div, a')].filter(e => visible(e) && e.children.length <= 2 && /^(求简历|要附件简历|索要简历|要简历)$/.test(textOf(e)))
+      .find((e, i, all) => !all.some(o => o !== e && e.contains(o)));
+    if (!btn) return post('resumeResult', { reqId, ok: false, msg: '没找到「求简历」按钮' });
+    realClick(btn);
+    for (let k = 0; k < 16; k++) {
+      await wait(300);
+      const dlg = [...document.querySelectorAll('[class*="dialog"], [class*="modal"], [class*="popup"], [class*="pop"]')].find(e => visible(e) && /简历/.test(textOf(e)));
+      const ok = dlg && [...dlg.querySelectorAll('button, span, div, a')].find(b => visible(b) && b.children.length <= 1 && /^(确定|确认|发送|立即索要|索要)$/.test(textOf(b)));
+      if (ok) { realClick(ok); await wait(800); }
+      const toast = [...document.querySelectorAll('[class*="toast"], [class*="tip"], [class*="message"]')].find(e => visible(e) && /已发送|已索要|请求已/.test(textOf(e)));
+      if (messageRows().length > before || toast) return post('resumeResult', { reqId, ok: true, msg: '已向对方索要附件简历' });
+    }
+    post('resumeResult', { reqId, ok: false, msg: '点了「求简历」，但没看到发出的请求，请你看一下页面' });
+  }
+
   // ---------- follow-ups ----------
   async function openBy(reqId, { name }) {
     if (inputText(chatInput())) return post('openResult', { reqId, ok: false, msg: '输入框有内容，暂不切换会话' });
@@ -453,6 +471,7 @@
     if (d.type === 'invite') post('inviteResult', { reqId: d.reqId, ok: false, msg: 'BOSS 直聘的自动发面试邀约还在适配中，请你手动点「约面试」' });
     if (d.type === 'history') collectHistory(d.reqId, d.max);
     if (d.type === 'openBy') openBy(d.reqId, d);
+    if (d.type === 'askResume') askResume(d.reqId);
     if (d.type === 'readState') readState(d.reqId);
     if (d.type === 'historyStop') collecting = false;
     if (d.type === 'reread') { lastSig = ''; lastRecSig = ''; isRecPage() ? readRecommend() : readChat(); }

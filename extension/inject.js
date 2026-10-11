@@ -410,6 +410,23 @@
       badges: badgeRows().filter(r => r.name !== cur).length, unread: sessionsOf(st).filter(s => unreadOf(s) > 0 && !isActive(st, s)).length });
   }
 
+  // ---------- ask for the attachment resume via the platform's own button ----------
+  async function askResume(reqId) {
+    const st = rootVm()?.$store?.state?.im;
+    const tlLen = () => ((st && st.timelineMap?.[st.activeSessionId]?.timeline) || []).length;
+    const before = tlLen();
+    if (!clickByText('要附件简历') && !clickByText('索要简历') && !clickByText('要简历')) return post('resumeResult', { reqId, ok: false, msg: '没找到「要附件简历」按钮' });
+    for (let k = 0; k < 16; k++) {
+      await wait(300);
+      // a confirmation pop-up: press its confirm button
+      const dlg = dialogs().find(d => /简历/.test(d.innerText || ''));
+      const ok = dlg && [...dlg.querySelectorAll('button, .km-button')].find(b => visible(b) && /^(确定|确认|发送|立即索要|索要)$/.test((b.innerText || '').trim()));
+      if (ok) { realClick(ok); await wait(800); }
+      if (tlLen() > before) return post('resumeResult', { reqId, ok: true, msg: '已向对方索要附件简历' });
+    }
+    post('resumeResult', { reqId, ok: false, msg: '点了「要附件简历」，但没看到发出的请求，请你看一下页面' });
+  }
+
   // ---------- follow-ups: open a given candidate's conversation, read our last message's state ----------
   async function openBy(reqId, { uid, name }) {
     const st = rootVm()?.$store?.state?.im;
@@ -682,6 +699,7 @@
     if (d.type === 'nextUnread') nextUnread(d.reqId, d.skip);
     if (d.type === 'history') collectHistory(d.reqId, d.max);
     if (d.type === 'openBy') openBy(d.reqId, d);
+    if (d.type === 'askResume') askResume(d.reqId);
     if (d.type === 'resetVisited') visited.clear();
     if (d.type === 'readState') readState(d.reqId);
     if (d.type === 'invite') sendInvite(d.reqId, d);

@@ -212,6 +212,13 @@ export async function suggestReply(candidate, history, ctx) {
   const questions = (role.questions && role.questions.length ? role.questions : DEFAULT_ROLES.teacher.questions);
   const toAsk = questions.filter(([k]) => !known[k]).map(([, q]) => q);
   const rounds = history.filter(m => m.dir === 'out' && !m.tpl).length;
+  // attachment resume: ask once, after the candidate has engaged (not in the very first line)
+  const resumeStatus = candidate.resume_status || '未索要';
+  const hasResumeCard = history.some(m => m.dir === 'in' && /^\[卡片·附件简历\]/.test(m.text));
+  const resumeOpen = resumeStatus === '未索要' && !hasResumeCard;
+  const resumeRule = resumeOpen
+    ? '附件简历：还没收到对方的附件简历。对方回复过之后（或邀约面试时），顺带自然地请对方发一份附件简历，例如“方便的话发份附件简历给我，我先给面试官看看”，并把 askResume 设为 true；对方在拒绝、讨价还价或情绪不好时不要提。'
+    : `附件简历：${hasResumeCard ? '已经收到' : resumeStatus}，不要再要简历。`;
   const pace = `沟通节奏：先寒暄、了解情况，再介绍和邀约。还没了解的：${toAsk.join('、') || '（都已了解）'}。每条消息最多问一个问题，已经知道的不要再问。对方提出问题时先认真回答，再顺带问下一个。`
     + `已经聊了 ${rounds} 轮；当对方表现出意向，或基本情况已了解大半（或已聊到第 3 轮以上）时，就主动邀约初试，给出上面的时间选项。`;
   const scenarioRule = scenario === '投递-符合'
@@ -233,7 +240,7 @@ export async function suggestReply(candidate, history, ctx) {
 6. 目标：了解基本情况——${questions.map(([, q]) => q).join('、')}，然后约初试（上午 9:00–11:00 或下午 13:00–15:00）。面试地点统一在${org.place}。
    岗位要点（${role.name}）：${role.focus || ''}
 7. 判断对方这次的问题之前是否已经问过（看聊天记录里对方的旧消息，同一个意思换了说法也算），填 askedBefore。
-8. 当前情况：${situation}
+8. 当前情况：${situation}。${resumeRule}
 9. ${scenarioRule}
 ${pb ? `10. 下面是这位招聘负责人过去的沟通逻辑和话术，请模仿其口吻、节奏和推进方式（事实仍以学校资料为准）：\n${pb}\n` : ''}
 问答：${kb.map(k => `[${k.id}] ${k.q}：${k.a}`).join(' ')}
@@ -241,7 +248,7 @@ ${pb ? `10. 下面是这位招聘负责人过去的沟通逻辑和话术，请�
 ${docText || '（无相关段落）'}
 今天是 ${todayCN()}，明天是 ${tomorrow}。
 已知信息：${JSON.stringify(slots)}；当前面试安排：${appt ? `${appt.date} ${appt.slot}（${appt.status}）` : '无'}。
-只输出 JSON：{"intent":"${INTENTS.join('|')}","topic":"${TOPICS.join('|')}","askedBefore":false,"unknown":false,"slots":{${questions.map(([k, q]) => `"${k}":"${q.replace(/"/g, '')}的答案，或null"`).join(',')},"cert":"有/没有/在考/null","day":"YYYY-MM-DD 或 null","half":"am/pm/any/null"},"reply":"给候选人的回复","kb":["引用的编号，如 KB-01、D2"]}
+只输出 JSON：{"intent":"${INTENTS.join('|')}","topic":"${TOPICS.join('|')}","askedBefore":false,"unknown":false,"askResume":false,"slots":{${questions.map(([k, q]) => `"${k}":"${q.replace(/"/g, '')}的答案，或null"`).join(',')},"cert":"有/没有/在考/null","day":"YYYY-MM-DD 或 null","half":"am/pm/any/null"},"reply":"给候选人的回复","kb":["引用的编号，如 KB-01、D2"]}
 说明：intent 里“议价”只指讨价还价（能不能再高点、能保证一万吗）；单纯问工资多少、有没有五险一金、几点下班属于“提问”。`;
     const msgs = [{ role: 'system', content: sys }];
     // cards are described in words (a "[卡片]" prefix makes the model copy it); template greetings are labelled
@@ -352,6 +359,12 @@ ${docText || '（无相关段落）'}
   const nextQ = toAsk[0] ? `方便说下，你${toAsk[0]}？` : null;
   if (!reply) reply = nextQ ? `收到。${nextQ}` : `收到。${offerTxt ? `方便来学校初试吗？${offerTxt}都可以。` : '方便的话约个时间来学校初试？'}`;
 
+  // ---- ask for the attachment resume (once; the extension then clicks the platform's own button) ----
+  const resumeAsk = resumeOpen && !handoff && !declineTz && verdict !== '不推荐'
+    && !['拒绝', '议价', '要求真人', '投递-不符合', '改期'].includes(intent)
+    && (ai?.askResume === true || (!ai && rounds >= 1 && ['提供信息', '约面时间', '确认参加', '提问', '其他', '投递-符合', '投递-待确认'].includes(intent)));
+  if (resumeAsk && !/简历/.test(reply)) reply = `${reply.replace(/[。！!]?$/, '。')}方便的话发份附件简历给我，我先给面试官看看。`;
+
   // ---- checks ----
   const kbText = kb.map(k => k.a).join(' ') + ' ' + docText + ' ' + (ctx.offer || []).map(o => `${o.date.slice(5)} ${o.slot}`).join(' ') + ' ' + [...sched.am, ...sched.pm].join(' ') + (slot ? ` ${slot.slot} ${slot.date.slice(5)}` : '') + (appt ? ` ${appt.slot} ${appt.date.slice(5)}` : '');
   const allowed = (kbText.match(/\d+(?:[.:：]\d+)?/g) || []).map(n => n.replace('：', ':'));
@@ -363,7 +376,7 @@ ${docText || '（无相关段落）'}
 
   reply = clip(reply, 200);
   return {
-    intent, topic, asked, reply, parts: splitHuman(reply), slots: newSlots, action, slot, byAi: !!ai, aiError: ai ? null : clip(err || '', 160), declineTz,
+    intent, topic, asked, reply, parts: splitHuman(reply), slots: newSlots, action, slot, byAi: !!ai, aiError: ai ? null : clip(err || '', 160), declineTz, resumeAsk,
     sources: passages.map(p => ({ title: p.title, text: clip(p.text, 80) })),
     checks: { guard: guardHits, platform: risk.platform }, blocked,
     handoff, handoffWhy, stateChange, model: model || (err ? `规则回退（${clip(err, 80)}）` : '规则回退（未配置 AI）'),
