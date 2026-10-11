@@ -18,9 +18,19 @@
     for (let e = el, k = 0; e && k < 5; e = e.parentElement, k++) if (e.__vue__ && e.__vue__.$props && e.__vue__.$props.candidate) return e.__vue__;
     return null;
   }
+  // job-intention fields come as string / array / object depending on the page;
+  // collect their text only.
+  function texts(v, d = 0, out = []) {
+    if (v == null || d > 3 || out.length > 20) return out;
+    if (typeof v === 'string') { const t = v.replace(/<[^>]+>/g, '').trim(); if (t && t.length < 60 && !out.includes(t)) out.push(t); }
+    else if (Array.isArray(v)) v.slice(0, 10).forEach(x => texts(x, d + 1, out));
+    else if (typeof v === 'object') for (const [k, x] of Object.entries(v)) if (!/id$|code|num|url|img|avatar|phone|mobile/i.test(k)) texts(x, d + 1, out);
+    return out;
+  }
   // whitelist: no avatar, phone, ids beyond resumeNumber
   function pick(c) {
     return {
+      intentText: texts([c.desiredJobType, c.preferredJobType, c.desiredJobTypeHighlights, c.desiredJobTypeName, c.jobIntention, c.purposeJobType]).join(' ').slice(0, 200),
       resumeNumber: c.resumeNumber, userName: c.userName, gender: c.gender, age: c.age, educationLevel: c.educationLevel,
       workYears: c.workYears, workYearsLabel: c.workYearsLabel, careerStatus: c.careerStatus, desiredSalary: c.desiredSalary,
       cityLabel: c.cityLabel, desiredJobType: typeof c.desiredJobType === 'string' ? c.desiredJobType : '',

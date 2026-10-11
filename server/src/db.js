@@ -56,6 +56,11 @@ export const DEFAULT_SETTINGS = {
     subjectKeywords: ['数学', '物理', '化学', '生物', '科学', '理科', '语文', '英语'],
     schoolPattern: '中学|小学|学校|一中|二中|三中|实验|附中|教师|老师',
     trainingPattern: '培训|教育科技|辅导|托管|机构|网校',
+    // 意向型：无教学经验但求职方向是教师类的年轻人，也推荐打招呼
+    intentTrack: true,
+    intentMaxAge: 30,
+    intentMinEdu: '本科',
+    intentKeywords: ['教师', '教学', '老师', '助教', '讲师', '教研', '班主任'],
   },
   schedule: {
     am: ['09:00', '09:30', '10:00', '10:30', '11:00'],

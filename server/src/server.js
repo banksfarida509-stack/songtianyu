@@ -388,7 +388,7 @@ route('POST', '/api/settings/rotate-token', 'admin', (req, res) => { const t = r
 route('POST', '/api/settings/rescreen', 'admin', (req, res) => {
   const rules = getSetting(db, 'rules'); let n = 0;
   for (const c of db.prepare("SELECT * FROM candidates WHERE work_json IS NOT NULL").all()) {
-    const norm = { uid: c.uid, name: c.name, age: c.age, edu: c.edu, school: c.school, school_tag: c.school_tag, major: c.major, years: c.years,
+    const norm = { uid: c.uid, name: c.name, age: c.age, edu: c.edu, school: c.school, school_tag: c.school_tag, major: c.major, years: c.years, expect: c.expect,
       work: j(c.work_json, []), edus: j(c.edu_json, []), skills: j(c.skills_json, []), certs: j(c.certs_json, []) };
     const sc = screen(norm, rules);
     db.prepare("UPDATE candidates SET verdict=?, score=?, rules_json=?, reason=CASE WHEN reason_by='staff' THEN reason ELSE ? END, reason_by=CASE WHEN reason_by='staff' THEN 'staff' ELSE 'rule' END WHERE id=?")

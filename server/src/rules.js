@@ -39,7 +39,8 @@ export function normalizeZhaopin(raw) {
     major: top.major || null,
     years: clip(raw.workYearsLabel || raw.workYears, 12),
     career_status: clip(raw.careerStatus, 20),
-    expect: clip([raw.cityLabel || raw.desiredCity, raw.desiredJobType, raw.desiredSalary].filter(x => typeof x === 'string' && x).join(' · '), 80),
+    expect: clip([raw.cityLabel || raw.desiredCity, raw.intentText || raw.desiredJobType, raw.desiredSalary].filter(x => typeof x === 'string' && x).join(' · '), 120),
+    intent: clip(typeof raw.intentText === 'string' ? raw.intentText : typeof raw.desiredJobType === 'string' ? raw.desiredJobType : '', 200),
     work, edus,
     skills: (raw.skillTags || []).slice(0, 12).map(x => clip(x, 20)),
     certs: (raw.certificateNames || []).slice(0, 10).map(x => clip(x, 40)),
@@ -69,16 +70,29 @@ export function screen(c, rules) {
   else { r4ok = false; r4ev = titles || '无教学经历'; }
   r.push({ id: 'R04', name: '学校教学经历或师范院校', ok: r4ok, ev: r4ev });
 
-  const verdict = r.some(x => x.ok === false) ? '不推荐' : r.some(x => x.ok === null) ? '待确认' : '推荐';
+  // R05 意向型：年轻、学历够、求职方向是教师类，没有教学经验 / 专业不对口也可以打招呼
+  const intentText = `${c.intent || ''} ${c.expect || ''}`;
+  const intentHit = (rules.intentKeywords || []).find(k => k && intentText.includes(k));
+  const young = c.age != null && c.age <= (rules.intentMaxAge ?? 30) && eduRank(c.edu) >= eduRank(rules.intentMinEdu || '本科');
+  const intentPass = rules.intentTrack !== false && !!intentHit && young && !schoolTeach && !normal;
+  if (intentPass) {
+    for (const x of r) if ((x.id === 'R03' || x.id === 'R04') && x.ok !== true) { x.waived = true; x.ev += '（意向型放宽）'; }
+    r.push({ id: 'R05', name: `意向型：${rules.intentMinEdu || '本科'}+、≤${rules.intentMaxAge ?? 30} 岁、求职方向含教师类关键词`, ok: true, ev: `${c.age} 岁 ${c.edu}，求职方向命中“${intentHit}”` });
+  }
+
+  const live = r.filter(x => !x.waived);
+  const verdict = live.some(x => x.ok === false) ? '不推荐' : live.some(x => x.ok === null) ? '待确认' : '推荐';
   const yrs = num(c.years) ?? 0;
   let score = 55 + (schoolTeach ? 12 : 0) + (normal ? 8 : 0) + (/985|211|双一流/.test(c.school_tag || '') ? 8 : 0)
     + Math.min(yrs, 3) * 4 + (eduRank(c.edu) >= 4 ? 4 : 0) + (hasCert ? 4 : 0) - (trainTeach && !schoolTeach ? 6 : 0);
+  if (intentPass) score = Math.min(score, 66) - (kwHit ? 0 : 4);
   if (verdict === '不推荐') score = Math.min(score, 40);
   score = Math.max(0, Math.min(98, score));
 
-  const f = r.find(x => x.ok === false), u = r.find(x => x.ok === null);
+  const f = live.find(x => x.ok === false), u = live.find(x => x.ok === null);
   let reason;
-  if (verdict === '推荐') reason = `${c.school || ''}${c.school_tag ? ' ' + c.school_tag : ''} ${c.major || ''}；${schoolTeach ? schoolTeach.role || '学校教学经历' : '师范背景'}${hasCert ? '；有教师资格证' : '；资格证待追问'}`;
+  if (verdict === '推荐' && intentPass) reason = `${c.age} 岁 ${c.edu}，${c.school || ''} ${c.major || ''}；无教学经验，但求职方向是“${intentHit}”（意向型）`;
+  else if (verdict === '推荐') reason = `${c.school || ''}${c.school_tag ? ' ' + c.school_tag : ''} ${c.major || ''}；${schoolTeach ? schoolTeach.role || '学校教学经历' : '师范背景'}${hasCert ? '；有教师资格证' : '；资格证待追问'}`;
   else if (verdict === '待确认') reason = `${u.ev}，需你确认`;
   else reason = f.id === 'R01' ? `年龄 ${c.age} 岁，超过 ${rules.maxAge} 岁上限` : f.id === 'R02' ? `${c.edu}学历，要求${rules.minEdu}及以上` : f.id === 'R03' ? `${c.major || '专业'}与岗位科目不对口` : `无学校教学经历：${f.ev}`;
   return { verdict, score, rules: r, reason: clip(reason.trim(), 80) };

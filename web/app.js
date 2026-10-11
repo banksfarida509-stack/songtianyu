@@ -329,7 +329,11 @@ async function vSettings(m) {
       <label class="fi">最低学历<select id="r-edu">${['大专', '本科', '硕士'].map(x => `<option ${x === R.minEdu ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
       <label class="fi full">科目关键词（专业或职位命中任一即对口，用逗号分隔）<input id="r-kw" value="${esc(R.subjectKeywords.join('，'))}"></label>
       <label class="fi full">学校教学经历关键词（正则）<input id="r-sp" value="${esc(R.schoolPattern)}"></label>
-      <label class="fi full">培训机构关键词（正则，只有这类经历判“待确认”）<input id="r-tp" value="${esc(R.trainingPattern)}"></label></div>
+      <label class="fi full">培训机构关键词（正则，只有这类经历判“待确认”）<input id="r-tp" value="${esc(R.trainingPattern)}"></label>
+      <label class="fi full" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" id="r-it" style="width:auto" ${R.intentTrack !== false ? 'checked' : ''}>意向型也推荐：没有教学经验，但学历、年龄达标且求职方向是教师类</label>
+      <label class="fi">意向型年龄上限<input id="r-ia" type="number" value="${esc(R.intentMaxAge ?? 30)}"></label>
+      <label class="fi">意向型最低学历<select id="r-ie">${['大专', '本科', '硕士'].map(x => `<option ${x === (R.intentMinEdu || '本科') ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+      <label class="fi full">求职方向关键词（命中任一即算教师类，逗号分隔）<input id="r-ik" value="${esc((R.intentKeywords || []).join('，'))}"></label></div>
       <div class="inline-form"><button class="btn pri" id="r-save">保存</button><button class="btn" id="r-re">按新规则重新初筛全部</button></div></div></div>
     <div class="card tester"><div class="card-h"><h3>发送前检查</h3><span class="sub">输入一条消息试试</span></div><div class="card-b">
       <textarea id="rt" class="inp" style="min-height:70px">可以关注我们的公众号，工资保证一万，链接 xxedu.cn/r/20261011003</textarea><div class="hits" id="hits"></div></div></div>
@@ -356,7 +360,8 @@ async function vSettings(m) {
   $('#rot').onclick = async () => { await api('/settings/rotate-token', { body: {} }); toast('令牌已更换，请重新下载插件'); vSettings(m); };
   $('#ai-save').onclick = () => save({ ai: { enabled: $('#ai-on').checked, provider: $('#ai-p').value.trim(), model: $('#ai-m').value.trim(), fallbackProvider: $('#ai-fp').value.trim(), fallbackModel: $('#ai-fm').value.trim() } });
   $('#ai-test').onclick = async () => { $('#ai-res').textContent = '测试中…'; const r = await api('/tools/llm-test', { body: {} }); $('#ai-res').innerHTML = r.ok ? `<b class="ok-dot">● 正常</b> ${esc(r.provider)}/${esc(r.model)} · ${r.ms} ms · “${esc(r.reply)}”` : `<b class="bad-dot">● 失败</b> ${esc(r.error)}`; };
-  $('#r-save').onclick = () => save({ rules: { maxAge: +$('#r-age').value, minEdu: $('#r-edu').value, subjectKeywords: list($('#r-kw').value), schoolPattern: $('#r-sp').value.trim(), trainingPattern: $('#r-tp').value.trim() } });
+  $('#r-save').onclick = () => save({ rules: { maxAge: +$('#r-age').value, minEdu: $('#r-edu').value, subjectKeywords: list($('#r-kw').value), schoolPattern: $('#r-sp').value.trim(), trainingPattern: $('#r-tp').value.trim(),
+    intentTrack: $('#r-it').checked, intentMaxAge: +$('#r-ia').value || 30, intentMinEdu: $('#r-ie').value, intentKeywords: list($('#r-ik').value) } });
   $('#r-re').onclick = async () => { await $('#r-save').onclick(); const r = await api('/settings/rescreen', { body: {} }); toast(`已按新规则重新初筛 ${r.rescreened} 人`); };
   $('#s-save').onclick = async () => {
     const am = list($('#s-am').value), pm = list($('#s-pm').value);
