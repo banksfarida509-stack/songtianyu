@@ -40,7 +40,7 @@ export const DEFAULT_ROLES = {
     focus: '学管师负责学员的学习跟进、家长沟通、排课和课时管理、续费服务。沟通时了解对方的沟通能力、耐心和稳定性；没有教育行业经验但做过客服、运营等服务工作的也欢迎。周末是教培行业的上课高峰，要提前说明作息并确认对方能接受。',
   },
   zixun: {
-    name: '咨询师',
+    name: '课程顾问',
     jobKeywords: ['咨询', '课程顾问', '学习顾问', '教育顾问', '招生', '销售', '顾问'],
     rules: {
       // 统招大专及以上；在教育行业做过销售的，非统招大专也可以
@@ -61,6 +61,22 @@ export const DEFAULT_ROLES = {
     notes: '',
     focus: '咨询师（课程顾问）负责接待家长咨询、了解学生情况、推荐课程并促成报名，收入和业绩挂钩。沟通时了解对方的销售意愿、抗压能力和表达能力；做过其他行业销售（房产、保险、电销等）的也欢迎。收入、提成只能用资料里的事实，资料没有就说面试时详细介绍。',
   },
+};
+
+// 其他: job titles that match no role. Only age / education are checked, so most land
+// on 待确认 for the recruiter (and the notes review can widen them).
+DEFAULT_ROLES.other = {
+  name: '其他',
+  jobKeywords: [],
+  rules: { maxAge: 35, minEdu: '大专', youngMaxAge: 30, requireTongzhao: false, eduSalesException: false, expKeywords: [], majorKeywords: [], intentKeywords: [] },
+  questions: [
+    ['employed', '现在是在职还是已经离职'],
+    ['live', '现在住在哪里，来校区方不方便'],
+    ['arrive', '什么时候可以开始工作'],
+  ],
+  // 岗位要求与特殊情况备注：负责人写的放宽 / 补充条件，AI 复核初筛时使用
+  notes: '',
+  focus: '',
 };
 
 export const ROLE_KEYS = Object.keys(DEFAULT_ROLES);
@@ -123,14 +139,23 @@ export const ROLE_KB_TEMPLATES = [
 答：（请填写）`],
 ];
 
-/** Which role a job title belongs to: specific roles first, 教师 is the default. */
+// subject words also mean a teaching job (“初中物理”, “小学数学”)
+const SUBJECT_WORDS = ['语文', '数学', '英语', '物理', '化学', '生物', '历史', '地理', '政治', '道法', '科学', '文化课', '学科'];
+
+/**
+ * Which role a job title belongs to: 学管师 / 课程顾问 first, then 教师 (by its keywords or
+ * a subject name), otherwise 其他. No job title at all counts as 教师 (the usual case).
+ */
 export function roleFor(job, roles) {
-  const t = String(job || '');
-  for (const key of ROLE_KEYS.filter(k => k !== 'teacher')) {
+  const t = String(job || '').trim();
+  if (!t) return 'teacher';
+  for (const key of ['xueguan', 'zixun']) {
     const r = roles[key];
     if (r && r.enabled !== false && (r.jobKeywords || []).some(k => k && t.includes(k))) return key;
   }
-  return 'teacher';
+  const tk = [...((roles.teacher || {}).jobKeywords || []), ...SUBJECT_WORDS];
+  if (tk.some(k => k && t.includes(k))) return 'teacher';
+  return roles.other ? 'other' : 'teacher';
 }
 
 // 统招 status of the degrees that meet the minimum level: true / false / null (not shown)

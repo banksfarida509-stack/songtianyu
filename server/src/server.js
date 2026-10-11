@@ -26,6 +26,15 @@ const ADMIN_USER = process.env.HR_ADMIN_USER || 'admin';
 const ADMIN_PASS = process.env.HR_ADMIN_PASS || '';
 
 const db = openDb(DB_FILE);
+// sort existing candidates into roles by job title (adds 其他; hand-set roles are kept)
+{
+  const roles = getSetting(db, 'roles');
+  const up = db.prepare('UPDATE candidates SET role=? WHERE id=?');
+  for (const c of db.prepare('SELECT id, job, role FROM candidates WHERE role_manual=0').all()) {
+    const k = roleFor(c.job, roles);
+    if (k !== c.role) up.run(k, c.id);
+  }
+}
 // the extension version shipped with this server; the extension compares itself against it
 const EXT_VERSION = (() => { try { return JSON.parse(fs.readFileSync(path.join(EXT_DIR, 'manifest.json'), 'utf8')).version; } catch { return ''; } })();
 const secret = getSetting(db, 'session_secret');
@@ -78,7 +87,7 @@ function candOut(c, full = false) {
     id: c.id, platform: c.platform, uid: c.uid, name: c.name, age: c.age, edu: c.edu, school: c.school, schoolTag: c.school_tag,
     major: c.major, years: c.years, careerStatus: c.career_status, expect: c.expect, job: c.job,
     verdict: c.verdict, score: c.score, reason: c.reason, reasonBy: c.reason_by, attend: c.attend, handoff: !!c.handoff,
-    role: c.role || 'teacher', roleName: (getSetting(db, 'roles')[c.role || 'teacher'] || {}).name || '教师',
+    role: c.role || 'teacher', roleName: (getSetting(db, 'roles')[c.role || 'teacher'] || {}).name || '教师', roleManual: !!c.role_manual, staffNote: c.staff_note || '',
     pref: j(c.pref_json, {}), slots: j(c.slots_json, {}), lastNote: c.last_note, source: c.source, owner: c.owner,
     isDemo: !!c.is_demo, createdAt: c.created_at, updatedAt: c.updated_at, appt: appt || null,
   };
@@ -106,8 +115,11 @@ function roleOf(job) {
 }
 // a short fingerprint of a role's notes: an AI review stays valid while the notes are unchanged
 const notesHash = notes => [...String(notes || '')].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7).toString(36);
+const roleByKey = key => { const roles = getSetting(db, 'roles'); const k = roles[key] ? key : 'teacher'; return { key: k, ...roles[k] }; };
+// a role set by hand on the candidate wins over the job title
+const roleForCand = (c, job) => (c && c.role_manual ? roleByKey(c.role) : roleOf(job || (c && c.job)));
 function screenFor(n, job, ex) {
-  const role = roleOf(job);
+  const role = roleForCand(ex, job);
   const sc = { ...(role.key === 'teacher' ? screen(n, getSetting(db, 'rules')) : screenRole(n, role)), roleKey: role.key };
   // keep an earlier AI review against the notes if the rule verdict and the notes are the same as then
   const prev = ex && j(ex.rules_json, []).find(r => r.id === 'AI');
@@ -241,7 +253,7 @@ route('POST', '/api/ext/followup/draft', 'ext', async (req, res) => {
   if (!kind) return send(res, 200, { skip: true, why: '对方已经回复，或这次冷场已经跟进过' });
   if (kind === 'read' && cfg.onlyIfRead !== false && b.lastOutRead === false) return send(res, 200, { skip: true, why: '对方还没读我们的消息，先不跟进' });
   const st = settingsAll();
-  const role = roleOf(c.job);
+  const role = roleForCand(c);
   const offer = ['am', 'pm'].map(half => findSlot(db, { half })).filter(Boolean);
   const history = db.prepare('SELECT dir,text FROM messages WHERE candidate_id=? ORDER BY id').all(c.id);
   const t = await followupText(kind, c, history, { settings: st, db, role, offer });
@@ -397,7 +409,7 @@ route('POST', '/api/ext/chat/suggest', 'ext', async (req, res) => {
       if (c.verdict !== '推荐' && !j(c.rules_json, []).some(r => r.id === 'AI')) { await reviewCandidates([c]); c = getCand(c.id); }
     }
   }
-  const role = roleOf(b.job || c.job);
+  const role = roleForCand(c, b.job || c.job);
   if (c.role !== role.key) db.prepare('UPDATE candidates SET role=? WHERE id=?').run(role.key, c.id);
   // 统招 already known from the resume (or not required thanks to education-sales experience): don't ask in chat
   if (role.rules?.requireTongzhao) {
@@ -501,12 +513,22 @@ route('GET', '/api/candidates', 'admin', (req, res, p, u, q) => {
   const where = [], args = [];
   if (q.get('attend')) { where.push('attend=?'); args.push(q.get('attend')); }
   if (q.get('verdict')) { where.push('verdict=?'); args.push(q.get('verdict')); }
-  if (q.get('q')) { where.push("(name LIKE ? OR school LIKE ? OR major LIKE ? OR job LIKE ?)"); const v = `%${q.get('q')}%`; args.push(v, v, v, v); }
+  if (q.get('q')) { where.push("(name LIKE ? OR school LIKE ? OR major LIKE ? OR job LIKE ? OR staff_note LIKE ?)"); const v = `%${q.get('q')}%`; args.push(v, v, v, v, v); }
+  // 岗位 filter (教师 / 学管师 / 课程顾问 / 其他) and 备注 filter (有备注 / 无备注 / a word in the note)
+  if (q.get('role') && ROLE_KEYS.includes(q.get('role'))) { where.push("COALESCE(role,'teacher')=?"); args.push(q.get('role')); }
+  const note = q.get('note') || '';
+  if (note === 'has') where.push("TRIM(COALESCE(staff_note,''))!=''");
+  else if (note === 'none') where.push("TRIM(COALESCE(staff_note,''))=''");
+  else if (note) { where.push('staff_note LIKE ?'); args.push(`%${note}%`); }
   const order = q.get('order') === 'score' ? 'score DESC, updated_at DESC' : 'updated_at DESC';
   const rows = db.prepare(`SELECT * FROM candidates ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY ${order} LIMIT 500`).all(...args);
-  const counts = Object.fromEntries(db.prepare('SELECT attend, COUNT(*) n FROM candidates GROUP BY attend').all().map(r => [r.attend, r.n]));
+  // counts for the tabs follow the role filter, so 来不来 numbers match the chosen 岗位
+  const roleWhere = q.get('role') && ROLE_KEYS.includes(q.get('role')) ? ["COALESCE(role,'teacher')=?", [q.get('role')]] : ['1=1', []];
+  const counts = Object.fromEntries(db.prepare(`SELECT attend, COUNT(*) n FROM candidates WHERE ${roleWhere[0]} GROUP BY attend`).all(...roleWhere[1]).map(r => [r.attend, r.n]));
   const vcounts = Object.fromEntries(db.prepare('SELECT verdict, COUNT(*) n FROM candidates GROUP BY verdict').all().map(r => [r.verdict, r.n]));
-  send(res, 200, { rows: rows.map(c => candOut(c)), counts, vcounts });
+  const rcounts = Object.fromEntries(db.prepare("SELECT COALESCE(role,'teacher') r, COUNT(*) n FROM candidates GROUP BY r").all().map(r => [r.r, r.n]));
+  const ncount = db.prepare("SELECT COUNT(*) n FROM candidates WHERE TRIM(COALESCE(staff_note,''))!=''").get().n;
+  send(res, 200, { rows: rows.map(c => candOut(c)), counts, vcounts, rcounts, ncount });
 });
 route('GET', '/api/candidates/:id', 'admin', (req, res, p) => {
   const c = getCand(Number(p.id));
@@ -529,6 +551,17 @@ route('PATCH', '/api/candidates/:id', 'admin', async (req, res, p) => {
     addEvent(db, c.id, `专员改判：${b.verdict}${b.reason ? '（' + clip(b.reason, 40) + '）' : ''}`);
   }
   if (typeof b.note === 'string') db.prepare('UPDATE candidates SET last_note=? WHERE id=?').run(clip(b.note, 120), c.id);
+  if (typeof b.staffNote === 'string') {
+    db.prepare('UPDATE candidates SET staff_note=? WHERE id=?').run(clip(b.staffNote.trim(), 300), c.id);
+    addEvent(db, c.id, b.staffNote.trim() ? `备注：${clip(b.staffNote.trim(), 60)}` : '清空备注');
+  }
+  // change the role by hand (kept from then on); 'auto' goes back to recognising it from the job title
+  if (typeof b.role === 'string' && (ROLE_KEYS.includes(b.role) || b.role === 'auto')) {
+    const manual = b.role !== 'auto';
+    const key = manual ? b.role : roleOf(c.job).key;
+    db.prepare('UPDATE candidates SET role=?, role_manual=? WHERE id=?').run(key, manual ? 1 : 0, c.id);
+    addEvent(db, c.id, manual ? `专员改岗位：${roleByKey(key).name}` : `岗位改回按职位名自动识别：${roleByKey(key).name}`);
+  }
   send(res, 200, candOut(getCand(c.id), true));
 });
 
@@ -540,7 +573,7 @@ route('POST', '/api/candidates/:id/chat-test', 'admin', async (req, res, p) => {
   if (c.attend === '未联系') db.prepare("UPDATE candidates SET attend='沟通中' WHERE id=?").run(c.id);
   const cx = chatContext(c.id);
   const d = await suggestReply({ ...c, slots: j(c.slots_json, {}) }, cx.history, { settings: settingsAll(), appt: activeAppt(db, c.id), db, earlierQuestions: cx.earlierQuestions,
-    role: roleOf(c.job), offer: ['am', 'pm'].map(half => findSlot(db, { half })).filter(Boolean) });
+    role: roleForCand(c), offer: ['am', 'pm'].map(half => findSlot(db, { half })).filter(Boolean) });
   if (d.topic) tagTopic(cx.unansweredIds, d.topic);
   db.prepare('UPDATE candidates SET slots_json=? WHERE id=?').run(s({ ...j(c.slots_json, {}), ...d.slots }), c.id);
   if (b.apply && !d.blocked) {

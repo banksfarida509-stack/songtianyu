@@ -131,6 +131,9 @@ export function openDb(file) {
   const ccols = db.prepare('PRAGMA table_info(candidates)').all().map(c => c.name);
   if (!ccols.includes('greeted_ms')) db.exec('ALTER TABLE candidates ADD COLUMN greeted_ms INTEGER');
   if (!ccols.includes('followup_json')) db.exec('ALTER TABLE candidates ADD COLUMN followup_json TEXT');
+  // the recruiter's own note on a candidate (人才池“备注”列), and a role set by hand (not overwritten by job-title matching)
+  if (!ccols.includes('staff_note')) db.exec('ALTER TABLE candidates ADD COLUMN staff_note TEXT');
+  if (!ccols.includes('role_manual')) db.exec('ALTER TABLE candidates ADD COLUMN role_manual INTEGER NOT NULL DEFAULT 0');
   dedupeBossIds(db);
   // job roles: each candidate and each knowledge-base document belongs to a role (通用 = all)
   if (!db.prepare('PRAGMA table_info(candidates)').all().some(c => c.name === 'role')) db.exec("ALTER TABLE candidates ADD COLUMN role TEXT NOT NULL DEFAULT 'teacher'");

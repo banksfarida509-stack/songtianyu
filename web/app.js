@@ -135,12 +135,19 @@ async function vScreen(m) {
 }
 
 /* ---------------- 人才池 ---------------- */
+// 人才池岗位分类（与后台岗位 key 对应）
+const POOL_ROLES = [['all', '全部岗位'], ['teacher', '教师'], ['xueguan', '学管师'], ['zixun', '课程顾问'], ['other', '其他']];
+const ROLE_LABEL = Object.fromEntries(POOL_ROLES.slice(1));
 async function vPool(m) {
   if (!m.querySelector('#poolwrap')) m.innerHTML = loading;
+  S.poolRole = S.poolRole || 'all'; S.poolNote = S.poolNote || '';
   const qs = new URLSearchParams();
   if (S.poolTab !== '全部') qs.set('attend', S.poolTab);
   if (S.q.trim()) qs.set('q', S.q.trim());
+  if (S.poolRole !== 'all') qs.set('role', S.poolRole);
+  if (S.poolNote) qs.set('note', S.poolNote);
   const d = await api('/candidates?' + qs);
+  const rc = d.rcounts || {}, rtotal = Object.values(rc).reduce((a, b) => a + b, 0);
   const counts = d.counts || {}, total = Object.values(counts).reduce((a, b) => a + b, 0);
   const order = c => ATTEND.indexOf(c.attend);
   const rows = d.rows.sort((a, b) => order(a) - order(b) || (a.appt && b.appt ? (a.appt.date + a.appt.slot).localeCompare(b.appt.date + b.appt.slot) : 0) || (b.score || 0) - (a.score || 0));
@@ -150,13 +157,36 @@ async function vPool(m) {
     return '<span class="muted">—</span>';
   };
   m.innerHTML = `<div id="poolwrap">` + ph('人才池', '按约聊结果管理：来不来、什么时间到场、由哪位面试官面试。点任意一行查看详细简历和约聊记录。') +
-    `<div class="card"><div class="toolbar"><div class="seg">${['全部', ...ATTEND].map(t => `<button aria-pressed="${S.poolTab === t}" data-t="${t}">${t}<span class="c">${t === '全部' ? total : counts[t] || 0}</span></button>`).join('')}</div>
-      <input class="search" id="q" placeholder="搜索姓名、学校、专业、岗位" value="${esc(S.q)}"></div>
-    <div class="tbl-wrap"><table class="rowc"><thead><tr><th>候选人</th><th>岗位</th><th>初筛</th><th>来不来</th><th>面试安排</th><th>最新进展</th><th></th></tr></thead><tbody>
-    ${rows.length ? rows.map(c => `<tr data-id="${c.id}"><td><div class="cand"><span class="ava">${esc((c.name || '?')[0])}</span><div><b>${esc(c.name)}${c.roleName && c.role !== 'teacher' ? ` <span class="tag t-info">${esc(c.roleName)}</span>` : ''}${c.isDemo ? '<span class="demo-tag">示例</span>' : ''}${c.handoff ? ' <span class="tag t-bad">转人工</span>' : ''}</b><span>${c.age ?? '—'}岁 · ${esc(c.edu || '—')} · ${esc(c.school || '')}</span></div></div></td>
-      <td>${esc(c.job || '—')}<div class="muted small">${esc(c.source || '')}</div></td><td>${tagV(c.verdict)} <span class="score">${c.score ?? ''}</span></td><td>${tagA(c.attend)}</td><td>${when(c)}</td><td class="latest">${esc(c.lastNote || '')}</td><td><button class="btn sm">简历</button></td></tr>`).join('')
-      : '<tr><td colspan="7"><div class="empty-state">没有符合条件的候选人</div></td></tr>'}</tbody></table></div></div></div>`;
+    `<div class="card"><div class="toolbar"><div class="seg">${POOL_ROLES.map(([k, t]) => `<button aria-pressed="${S.poolRole === k}" data-r="${k}">${t}<span class="c">${k === 'all' ? rtotal : rc[k] || 0}</span></button>`).join('')}</div>
+      <select class="inp" id="pnote" style="width:auto"><option value="">备注：全部</option><option value="has" ${S.poolNote === 'has' ? 'selected' : ''}>有备注（${d.ncount || 0}）</option><option value="none" ${S.poolNote === 'none' ? 'selected' : ''}>无备注</option></select></div>
+    <div class="toolbar" style="padding-top:0"><div class="seg">${['全部', ...ATTEND].map(t => `<button aria-pressed="${S.poolTab === t}" data-t="${t}">${t}<span class="c">${t === '全部' ? total : counts[t] || 0}</span></button>`).join('')}</div>
+      <input class="search" id="q" placeholder="搜索姓名、学校、专业、岗位、备注" value="${esc(S.q)}"></div>
+    <div class="tbl-wrap"><table class="rowc"><thead><tr><th>候选人</th><th>岗位</th><th>初筛</th><th>来不来</th><th>面试安排</th><th>最新进展</th><th style="min-width:180px">备注 <span class="muted small">（点击编辑）</span></th><th></th></tr></thead><tbody>
+    ${rows.length ? rows.map(c => `<tr data-id="${c.id}"><td><div class="cand"><span class="ava">${esc((c.name || '?')[0])}</span><div><b>${esc(c.name)}${c.isDemo ? '<span class="demo-tag">示例</span>' : ''}${c.handoff ? ' <span class="tag t-bad">转人工</span>' : ''}</b><span>${c.age ?? '—'}岁 · ${esc(c.edu || '—')} · ${esc(c.school || '')}</span></div></div></td>
+      <td><span class="tag ${c.role === 'other' ? 't-grey' : 't-info'}">${esc(ROLE_LABEL[c.role] || c.roleName || '教师')}</span><div>${esc(c.job || '—')}</div><div class="muted small">${esc(c.source || '')}</div></td><td>${tagV(c.verdict)} <span class="score">${c.score ?? ''}</span></td><td>${tagA(c.attend)}</td><td>${when(c)}</td><td class="latest">${esc(c.lastNote || '')}</td>
+      <td class="note-cell" data-note="${c.id}" title="点击编辑备注">${c.staffNote ? esc(c.staffNote) : '<span class="muted small">+ 添加备注</span>'}</td><td><button class="btn sm">简历</button></td></tr>`).join('')
+      : '<tr><td colspan="8"><div class="empty-state">没有符合条件的候选人</div></td></tr>'}</tbody></table></div></div></div>`;
   $$('[data-t]', m).forEach(b => b.onclick = () => { S.poolTab = b.dataset.t; vPool(m); });
+  $$('[data-r]', m).forEach(b => b.onclick = () => { S.poolRole = b.dataset.r; vPool(m); });
+  $('#pnote', m).onchange = e => { S.poolNote = e.target.value; vPool(m); };
+  // inline note editing: Enter or leaving the box saves, Esc cancels
+  $$('[data-note]', m).forEach(td => td.onclick = e => {
+    e.stopPropagation();
+    if (td.querySelector('textarea')) return;
+    const id = +td.dataset.note, c = rows.find(x => x.id === id), old = c.staffNote || '';
+    td.innerHTML = `<textarea class="inp" style="min-height:54px;font-size:12.5px" maxlength="300" placeholder="例如：说话有亲和力，可优先；下周再联系">${esc(old)}</textarea>`;
+    const ta = td.querySelector('textarea'); ta.focus(); ta.setSelectionRange(old.length, old.length);
+    let done = false;
+    const finish = async save => {
+      if (done) return; done = true;
+      const v = ta.value.trim();
+      if (save && v !== old) { try { await api(`/candidates/${id}`, { method: 'PATCH', body: { staffNote: v } }); c.staffNote = v; toast(v ? '备注已保存' : '备注已清空'); } catch (er) { toast(er.message); } }
+      td.innerHTML = c.staffNote ? esc(c.staffNote) : '<span class="muted small">+ 添加备注</span>';
+    };
+    ta.onclick = ev => ev.stopPropagation();
+    ta.onkeydown = ev => { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); finish(true); } if (ev.key === 'Escape') finish(false); };
+    ta.onblur = () => finish(true);
+  });
   const q = $('#q', m);
   q.oninput = () => { S.q = q.value; clearTimeout(vPool._t); vPool._t = setTimeout(async () => { const pos = q.selectionStart; await vPool(m); const i = $('#q', m); i.focus(); i.setSelectionRange(pos, pos); }, 300); };
   $$('tbody tr[data-id]', m).forEach(r => r.onclick = () => openDrawer(+r.dataset.id));
@@ -174,7 +204,11 @@ async function renderDrawer() {
     ['面试地点', esc(sch.place)], ['教师资格证', esc(c.slots.cert || (c.certs || []).join('、') || '未知')], ['最早到岗', esc(c.slots.arrive || '未知')], ['转人工', c.handoff ? '是' : '否']];
   root.innerHTML = `<div class="scrim" id="scrim"></div><aside class="drawer" role="dialog" aria-label="${esc(c.name)} 详情">
     <div class="dh"><div class="dh-top"><span class="ava">${esc((c.name || '?')[0])}</span><div><h2>${esc(c.name)} ${tagA(c.attend)} <span class="tag t-info">${esc(c.roleName || '教师')}</span></h2>
-      <div class="meta">${c.age ?? '—'}岁 · ${esc(c.edu || '—')} · ${esc(c.years || '')} · ${esc(c.careerStatus || '')}</div><div class="muted small">岗位 ${esc(c.job || '—')} · 来源 ${esc(c.source || '')}</div></div><button class="x" id="dx" aria-label="关闭">✕</button></div>
+      <div class="meta">${c.age ?? '—'}岁 · ${esc(c.edu || '—')} · ${esc(c.years || '')} · ${esc(c.careerStatus || '')}</div><div class="muted small">职位 ${esc(c.job || '—')} · 来源 ${esc(c.source || '')}</div>
+      <div class="inline-form" style="margin-top:6px;gap:6px;align-items:center"><span class="small">岗位分类</span><select class="inp" id="d-role" style="width:auto;padding:3px 8px">
+        <option value="auto">按职位名自动识别${c.roleManual ? '' : `（${esc(ROLE_LABEL[c.role] || '教师')}）`}</option>
+        ${POOL_ROLES.slice(1).map(([k, t]) => `<option value="${k}" ${c.roleManual && c.role === k ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+      <textarea class="inp" id="d-note" maxlength="300" style="margin-top:6px;min-height:44px;font-size:12.5px" placeholder="备注（人才池可按备注筛选），离开输入框自动保存">${esc(c.staffNote || '')}</textarea></div><button class="x" id="dx" aria-label="关闭">✕</button></div>
       <div class="dh-sum"><div>面试安排<b>${a ? `${esc(a.date.slice(5))} ${esc(a.slot)}${a.interviewer ? ' · ' + esc(a.interviewer) : ''}` : esc(halfTxt(c.pref))}</b></div><div>初筛<b><span class="score">${c.score ?? '—'}</span> 分 · ${esc(c.verdict || '')}</b></div><div>推荐理由<b style="font-size:12.5px;font-weight:500">${esc(c.reason || '')}</b></div></div>
       <div class="dtabs" role="tablist">${[['resume', '详细简历'], ['chat', '约聊记录'], ['tl', '时间线'], ['act', '操作']].map(([k, n]) => `<button role="tab" aria-selected="${S.dtab === k}" data-dt="${k}">${n}</button>`).join('')}</div></div>
     <div class="db">${S.dtab === 'resume' ? `
@@ -197,6 +231,9 @@ async function renderDrawer() {
       ${c.handoff ? `<div class="rs"><h4>转人工</h4><button class="btn sm" id="d-ho">已处理，交还 AI</button></div>` : ''}`}
     </div></aside>`;
   $('#scrim').onclick = $('#dx').onclick = () => { S.drawer = null; renderDrawer(); };
+  const refreshPool = () => { if (S.view === 'pool') vPool($('#main')); };
+  $('#d-role').onchange = async e => { await api(`/candidates/${c.id}`, { method: 'PATCH', body: { role: e.target.value } }); toast(e.target.value === 'auto' ? '已改回按职位名自动识别' : `岗位已改为：${ROLE_LABEL[e.target.value]}`); renderDrawer(); refreshPool(); };
+  $('#d-note').onblur = async e => { const v = e.target.value.trim(); if (v === (c.staffNote || '')) return; await api(`/candidates/${c.id}`, { method: 'PATCH', body: { staffNote: v } }); c.staffNote = v; toast('备注已保存'); refreshPool(); };
   $$('[data-dt]', root).forEach(b => b.onclick = () => { S.dtab = b.dataset.dt; renderDrawer(); });
   const after = async msg => { toast(msg); await renderDrawer(); render(); };
   if ($('#d-att-save')) $('#d-att-save').onclick = async () => { await api(`/candidates/${c.id}`, { method: 'PATCH', body: { attend: $('#d-att').value } }); after('已保存'); };
@@ -354,7 +391,7 @@ async function fileText(f) {
 }
 
 // knowledge-base document scope: all roles or one role
-const KB_ROLES = { all: '通用', teacher: '教师', xueguan: '学管师', zixun: '咨询师' };
+const KB_ROLES = { all: '通用', teacher: '教师', xueguan: '学管师', zixun: '课程顾问', other: '其他' };
 const roleSel = (id, v, attr = '') => `<select class="inp" ${id ? `id="${id}"` : ''} ${attr} style="width:auto">${Object.entries(KB_ROLES).map(([k, t]) => `<option value="${k}" ${k === (v || 'all') ? 'selected' : ''}>${t}</option>`).join('')}</select>`;
 async function vKb(m) {
   m.innerHTML = loading;

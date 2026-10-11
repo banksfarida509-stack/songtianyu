@@ -16,6 +16,9 @@ test('按职位名识别岗位；教师是默认', () => {
   assert.equal(roleFor('初高中文化课教师', DEFAULT_ROLES), 'teacher');
   assert.equal(roleFor('学管老师', DEFAULT_ROLES), 'xueguan');   // “老师”出现在学管职位里也归学管师
   assert.equal(roleFor('', DEFAULT_ROLES), 'teacher');
+  assert.equal(roleFor('初中物理', DEFAULT_ROLES), 'teacher');          // a subject name means a teaching job
+  assert.equal(roleFor('前台接待', DEFAULT_ROLES), 'other');            // matches no role → 其他
+  assert.equal(roleFor('课程顾问（底薪+提成）', DEFAULT_ROLES), 'zixun');
 });
 
 const card = over => normalizeZhaopin({ resumeNumber: 'r1', userName: 'x', age: 26, educationLevel: '大专', workExperiences: [], educationExperiences: [{ schoolName: '某职业学院', educationLevel: '大专', mode: '统招' }], ...over });
