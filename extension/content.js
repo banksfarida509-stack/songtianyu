@@ -44,17 +44,25 @@
   const panel = document.createElement('div');
   panel.id = 'hra-panel';
   document.documentElement.appendChild(panel);
-  const isRec = () => location.pathname.includes('/app/recommend');
-  const isIm = () => location.pathname.includes('/app/im');
+  // which recruiting site: 智联 (rd6.zhaopin.com) or BOSS直聘 (zhipin.com)
+  const PLATFORM = /zhipin\.com$/.test(location.hostname) ? 'boss' : 'zhaopin';
+  const SITE = PLATFORM === 'boss' ? 'BOSS直聘' : '智联';
+  const isRec = () => PLATFORM === 'zhaopin' && location.pathname.includes('/app/recommend');
+  const isIm = () => PLATFORM === 'boss' ? /chat/.test(location.pathname) : location.pathname.includes('/app/im');
 
   function rank() {
     return Object.entries(S.results).map(([uid, r]) => ({ uid, ...r })).filter(r => r.verdict === '推荐').sort((a, b) => b.score - a.score);
   }
   function draw() {
     if (S.dead) return;
+    if (PLATFORM === 'boss' && !isIm()) {
+      panel.hidden = false;
+      panel.innerHTML = `<div class="hra-head"><b>AI 招聘副驾</b><span>BOSS直聘</span></div><div class="hra-body"><p class="hra-muted">插件已加载。请打开 BOSS直聘的「沟通」聊天页，插件会读取会话并给出回复建议。${S.err ? `<br><span style="color:#C4313B">${esc(S.err)}</span>` : ''}</p></div>`;
+      return;
+    }
     if (!isRec() && !isIm()) { panel.hidden = true; return; }
     panel.hidden = false;
-    const head = `<div class="hra-head"><b>AI 招聘副驾</b><span>${isRec() ? '推荐页 · 初筛' : '聊天页 · 约聊'}</span><button class="hra-x" data-a="toggle">${S.collapsed ? '展开' : '收起'}</button></div>`;
+    const head = `<div class="hra-head"><b>AI 招聘副驾</b><span>${SITE} · ${isRec() ? '推荐页 · 初筛' : '聊天页 · 约聊'}</span><button class="hra-x" data-a="toggle">${S.collapsed ? '展开' : '收起'}</button></div>`;
     if (S.collapsed) { panel.innerHTML = head; bind(); return; }
     let body = '';
     if (S.err) body += `<div class="hra-err">${esc(S.err)}</div>`;
@@ -90,8 +98,9 @@
       ${A?.enabled ? `<button class="hra-btn sm" data-a="pause">${S.autoPaused ? '恢复' : '暂停'}</button>` : ''}
       <i id="hra-patrol">${S.patrolNote ? `巡检：${esc(S.patrolNote)}` : ''}</i>
       <i>${A ? `本小时自动发送 ${A.sentLastHour || 0}/${A.maxPerHour || 0}` : ''}${A && !A.enabled ? ' · 在后台“设置 → 约聊回复方式”里打开' : ''} · <a href="#" data-a="kb">编辑知识库</a></i></div>`;
+    if (PLATFORM === 'boss') b += '<div class="hra-err" style="background:#FDF2E3;color:#B25E09">BOSS直聘适配中：先只给回复建议，由你点“直接发送”。请点下方“复制诊断信息”发给技术支持，验证后开放全自动。</div>';
     const c = S.chat;
-    if (!c) b += '<p class="hra-muted">打开一个会话，插件会读取最新消息，分类后按设置自动回复或给出建议。</p>';
+    if (!c) b += `<p class="hra-muted">打开一个会话，插件会读取最新消息，分类后按设置自动回复或给出建议。${PLATFORM === 'boss' ? '如果打开会话后这里没有变化，说明还没读到聊天内容，请发诊断信息。' : ''}</p>`;
     else {
       b += `<div class="hra-sub">${esc(c.name)} · ${esc(c.job || '')}</div>`;
       const sc = S.screen;
@@ -199,7 +208,7 @@
     S.job = job || S.job;
     const fresh = cards.filter(c => !S.results[c.resumeNumber]);
     if (!fresh.length) return paintLines();
-    const r = await api('/ext/screen', { platform: 'zhaopin', job: S.job, cards: fresh });
+    const r = await api('/ext/screen', { platform: PLATFORM, job: S.job, cards: fresh });
     if (r.error) { S.err = r.error; return draw(); }
     S.err = '';
     const names = Object.fromEntries(cards.map(c => [c.resumeNumber, c.userName]));
@@ -208,7 +217,7 @@
     paintLines(); draw();
     const need = r.data.results.filter(x => x.reasonBy !== 'ai').map(x => x.uid);
     if (need.length) {
-      const rr = await api('/ext/reasons', { platform: 'zhaopin', uids: need });
+      const rr = await api('/ext/reasons', { platform: PLATFORM, uids: need });
       if (rr.data?.reasons) { for (const [k, v] of Object.entries(rr.data.reasons)) if (S.results[k]) { S.results[k].reason = v; S.results[k].reasonBy = 'ai'; } paintLines(); draw(); }
     }
   }
@@ -294,13 +303,15 @@
       return draw();
     }
     S.lastSuggestSig = sig; S.busy = true; S.draft = null; S.decision = null; S.pending = null; draw();
-    const r = await api('/ext/chat/suggest', { platform: 'zhaopin', sessionId: c.sessionId, uid: c.uid, name: c.name, job: c.job, origin: c.origin, profile: c.profile, messages: c.messages });
+    const r = await api('/ext/chat/suggest', { platform: PLATFORM, sessionId: c.sessionId, uid: c.uid, name: c.name, job: c.job, origin: c.origin, profile: c.profile, messages: c.messages });
     S.busy = false;
     if (suggestQueued !== null) { const f = suggestQueued; suggestQueued = null; if (chatSig(S.chat) !== sig || f) return suggest(f); }
     if (chatSig(S.chat) !== sig) return; // conversation moved on while waiting
     if (r.error) { S.err = r.error; return draw(); }
     S.err = ''; S.draft = r.data.draft; S.decision = r.data.decision; S.chatMode = r.data.chatMode; S.candidateId = r.data.candidateId; S.screen = r.data.screen;
     S.handledAt = Date.now();
+    // BOSS直聘: page reading is not verified yet, so nothing is sent automatically there
+    if (PLATFORM === 'boss' && S.decision?.mode === 'auto') S.decision = { mode: 'semi', why: 'BOSS直聘适配验证中，先由你确认后点“直接发送”' };
     const dc = S.decision || { mode: 'semi', why: '' };
     log(`${c.name}：${S.draft.intent} → ${MODE_TXT[dc.mode]}（${dc.why}）`);
     // the AI failed for a moment: try again (twice) instead of falling back for good
@@ -359,7 +370,7 @@
     if (!r.ok) { log(`采集失败：${r.msg}`); return draw(); }
     let conv = 0, msgs = 0;
     for (let i = 0; i < r.sessions.length; i += 10) {
-      const up = await api('/ext/chat/history', { platform: 'zhaopin', sessions: r.sessions.slice(i, i + 10) });
+      const up = await api('/ext/chat/history', { platform: PLATFORM, sessions: r.sessions.slice(i, i + 10) });
       if (up.error) { log(`上传失败：${up.error}`); break; }
       conv += up.data.conversations; msgs += up.data.newMessages;
     }

@@ -1,14 +1,16 @@
 {
   "manifest_version": 3,
   "name": "AI 招聘副驾",
-  "version": "0.4.7",
-  "description": "在招聘平台页面内读取简历做 AI 初筛、批量打招呼，约聊消息按分类全自动回复或给出建议（全自动需在后台开启）。",
+  "version": "0.5.0",
+  "description": "在招聘平台页面内读取简历做 AI 初筛、批量打招呼，约聊消息按分类全自动回复或给出建议（全自动需在后台开启）。支持智联招聘、BOSS直聘（适配中）。",
   "permissions": ["storage"],
-  "host_permissions": ["https://rd6.zhaopin.com/*", "http://*/*", "https://*/*"],
+  "host_permissions": ["https://rd6.zhaopin.com/*", "https://*.zhipin.com/*", "http://*/*", "https://*/*"],
   "background": { "service_worker": "background.js" },
   "content_scripts": [
     { "matches": ["https://rd6.zhaopin.com/*"], "js": ["inject.js"], "world": "MAIN", "run_at": "document_idle" },
-    { "matches": ["https://rd6.zhaopin.com/*"], "js": ["config.js", "content.js"], "css": ["content.css"], "run_at": "document_idle" }
+    { "matches": ["https://rd6.zhaopin.com/*"], "js": ["config.js", "content.js"], "css": ["content.css"], "run_at": "document_idle" },
+    { "matches": ["https://www.zhipin.com/*", "https://zhipin.com/*"], "js": ["boss.js"], "world": "MAIN", "run_at": "document_idle" },
+    { "matches": ["https://www.zhipin.com/*", "https://zhipin.com/*"], "js": ["config.js", "content.js"], "css": ["content.css"], "run_at": "document_idle" }
   ],
   "action": { "default_title": "AI 招聘副驾：设置与知识库" },
   "options_page": "options.html"
