@@ -27,7 +27,7 @@
     b.dispatchEvent(new PointerEvent('pointerup', o)); b.dispatchEvent(new MouseEvent('mouseup', o));
     b.click();
   }
-  const isChat = () => /chat/.test(location.pathname);
+  const isChat = () => /chat/.test(location.pathname) && !/recommend/.test(location.pathname);
 
   // ---------- conversation on screen ----------
   const ROW_RE = /item-(friend|myself)|message-item|msg-item|chat-message|message-card|im-message|chat-record|bubble/i;
@@ -272,6 +272,141 @@
     post('readStateResult', { reqId, name, lastDir: msgs.length ? msgs[msgs.length - 1].dir : null, read: bottom ? /已读/.test(bottom.textContent) : null, messages: msgs });
   }
 
+  // ---------- 推荐牛人 (recommend page; usually inside an iframe /web/frame/recommend/) ----------
+  const isRecPage = () => /recommend/.test(location.pathname);
+  const GREET_TXT = /^(打招呼|立即沟通|继续沟通|已沟通|沟通)$/;
+  function greetButtons(root = document) {
+    return [...root.querySelectorAll('button, a, span, div')].filter(e => e.children.length <= 2 && GREET_TXT.test(textOf(e)) && visible(e))
+      .filter((e, i, all) => !all.some(o => o !== e && e.contains(o))); // innermost
+  }
+  // the card around a greet button: the ancestor whose siblings are other cards
+  function cardOf(btn) {
+    for (let e = btn, k = 0; e && e.parentElement && k < 14; e = e.parentElement, k++) {
+      const sibs = [...e.parentElement.children].filter(x => x !== e && x.tagName === e.tagName);
+      if (sibs.length && sibs.some(x => greetButtons(x).length) && e.getBoundingClientRect().height > 60) return e;
+    }
+    return null;
+  }
+  // structured data held by the card's own component, if any (field names vary, so match by shape)
+  function vueData(card) {
+    for (let el = card, k = 0; el && k < 3; el = el.firstElementChild, k++) {
+      const vm = el.__vue__ || (el.__vueParentComponent && el.__vueParentComponent.props && { $props: el.__vueParentComponent.props });
+      if (!vm) continue;
+      for (const o of [vm.$props, vm.$data]) for (const v of Object.values(o || {})) if (v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length > 5) return v;
+    }
+    return null;
+  }
+  const strIn = (o, re) => { for (const [k, v] of Object.entries(o || {})) if (re.test(k) && (typeof v === 'string' || typeof v === 'number') && String(v)) return String(v); return ''; };
+  const arrIn = (o, itemRe) => { for (const v of Object.values(o || {})) if (Array.isArray(v) && v.length && typeof v[0] === 'object' && Object.keys(v[0]).some(k => itemRe.test(k))) return v; return []; };
+  const EDU_RE = /博士|硕士|研究生|本科|大专|专科|中专|中技|高中|初中/;
+  function parseCard(card) {
+    const d = vueData(card);
+    const text = textOf(card);
+    const lines = text.split(/\n+/).map(s => s.trim()).filter(Boolean);
+    const out = { userName: '', age: null, educationLevel: '', workYearsLabel: '', careerStatus: '', intentText: '', workExperiences: [], educationExperiences: [] };
+    if (d) {
+      out.userName = strIn(d, /^(geekName|name|userName|realName)$/i);
+      const ageS = strIn(d, /^age(Desc)?$/i); if (ageS) out.age = Number(ageS.match(/\d+/)?.[0]) || null;
+      out.educationLevel = strIn(d, /degree(Name)?|edu(cation)?(Level|Name|Desc)?$/i);
+      out.workYearsLabel = strIn(d, /work(Year|Years)(Desc)?$|experience(Desc)?$/i);
+      out.intentText = [strIn(d, /expect(Position|Job)?(Name)?$|positionName$/i), strIn(d, /expectLocation|city/i)].filter(Boolean).join(' ');
+      out.workExperiences = arrIn(d, /company|brand/i).slice(0, 6).map(w => ({ companyName: strIn(w, /company|brand/i), jobTitle: strIn(w, /position|title|job/i), beginDate: strIn(w, /start|begin/i), endDate: strIn(w, /end/i) }));
+      out.educationExperiences = arrIn(d, /school/i).slice(0, 4).map(e => ({ schoolName: strIn(e, /school/i), majorName: strIn(e, /major/i), educationLevel: strIn(e, /degree|edu/i), mode: strIn(e, /type|mode|统招|tongzhao/i) }));
+    }
+    // fill gaps from the card text: “25岁 | 3年 | 本科 | 离职-随时到岗”, “公司 · 职位”, “学校 · 专业 · 学历”
+    if (!out.userName) out.userName = nameIn(lines.slice(0, 3).join(' '));
+    if (out.age == null) { const m = text.match(/(\d{2})岁/); if (m) out.age = +m[1]; }
+    if (!out.educationLevel) out.educationLevel = (text.match(EDU_RE) || [''])[0];
+    if (!out.workYearsLabel) out.workYearsLabel = (text.match(/\d{1,2}年以上|\d{1,2}年(?!\d)|应届生?|在校生?/) || [''])[0];
+    out.careerStatus = (text.match(/(离职|在职)[^\s|·]{0,8}/) || [''])[0];
+    if (!out.intentText) out.intentText = lines.filter(l => /期望|求职|意向/.test(l)).join(' ').slice(0, 120);
+    if (!out.workExperiences.length || !out.educationExperiences.length) {
+      const fromVueWork = out.workExperiences.length, fromVueEdu = out.educationExperiences.length;
+      if (fromVueWork && !fromVueEdu) out.workExperiences = []; // re-read both from text so they stay consistent
+      if (fromVueEdu && !fromVueWork) out.educationExperiences = [];
+      for (const l of lines) {
+        const parts = l.split(/\s*[·•|｜]\s*/).filter(Boolean);
+        if (parts.length < 2 || /岁/.test(l)) continue;
+        // an education line names a degree (大专 / 本科 …); training schools as employers do not
+        const isEdu = EDU_RE.test(l) && /大学|学院|学校|职业|师范|中学|学堂/.test(parts[0]);
+        if (isEdu) { if (out.educationExperiences.length < 4) out.educationExperiences.push({ schoolName: parts[0], majorName: parts.find((x, i) => i > 0 && !EDU_RE.test(x) && !/统招|全日制|自考|成人|函授|网络/.test(x)) || '', educationLevel: (l.match(EDU_RE) || [''])[0], mode: (l.match(/非统招|统招|全日制|自考|成人|函授|网络/) || [''])[0] }); }
+        else if (out.workExperiences.length < 6 && !/期望|求职|意向/.test(l)) out.workExperiences.push({ companyName: parts[0], jobTitle: parts[1].replace(/\d{4}.*$/, '').trim() });
+      }
+    }
+    if (out.educationExperiences.length && !out.educationExperiences[0].educationLevel) out.educationExperiences[0].educationLevel = out.educationLevel;
+    // an id for the candidate: a geek / uid attribute, a link parameter, the component's id field, or a hash of the card
+    let uid = '';
+    for (const el of [card, ...card.querySelectorAll('[data-geekid], [data-uid], [data-id], [data-lid], [data-securityid], a[href]')]) {
+      for (const a of el.attributes || []) if (/geek|uid|lid|security|encrypt/i.test(a.name) && a.value.length > 4) { uid = a.value; break; }
+      if (!uid && el.tagName === 'A') { const m = (el.getAttribute('href') || '').match(/(?:geek|uid|id)=([\w-]{6,})/i); if (m) uid = m[1]; }
+      if (uid) break;
+    }
+    if (!uid && d) uid = strIn(d, /^(encryptGeekId|geekId|securityId|uid|encryptUid|expectId|lid)$/i);
+    if (!uid) uid = 'h' + [...`${out.userName}|${out.age}|${out.educationLevel}|${out.workExperiences[0]?.companyName || ''}|${out.educationExperiences[0]?.schoolName || ''}`].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7).toString(36);
+    return { resumeNumber: `boss-${uid}`, ...out, fromVue: !!d };
+  }
+  function currentRecJob() {
+    const docs = [document]; try { if (window.top !== window && window.top.document) docs.push(window.top.document); } catch { /* cross-origin */ }
+    for (const doc of docs) {
+      const e = [...doc.querySelectorAll('[class*="job"] [class*="label"], [class*="job-select"], [class*="jobSelect"], [class*="dropmenu-label"], [class*="job-name"], [class*="position-name"]')]
+        .find(x => visible(x) && textOf(x).length >= 2 && textOf(x).length <= 40 && !/推荐|搜索|全部/.test(textOf(x)));
+      if (e) return textOf(e).split('\n')[0].trim();
+    }
+    return '';
+  }
+  let lastRecSig = '';
+  function readRecommend() {
+    const cards = [];
+    for (const b of greetButtons()) {
+      const card = cardOf(b);
+      if (!card || card.hasAttribute('data-hra-skip')) continue;
+      let c = null;
+      try { c = parseCard(card); } catch { continue; }
+      if (!c.age && !c.educationLevel && !c.workExperiences.length) continue;
+      card.setAttribute('data-hra-uid', c.resumeNumber);
+      if (!cards.some(x => x.resumeNumber === c.resumeNumber)) cards.push(c);
+    }
+    const sig = cards.map(c => c.resumeNumber).join(',');
+    if (sig && sig !== lastRecSig) { lastRecSig = sig; post('recommend', { cards, job: currentRecJob() }); }
+  }
+  async function greetRec(uid) {
+    const card = document.querySelector(`[data-hra-uid="${CSS.escape(uid)}"]`);
+    if (!card) return post('greetResult', { uid, ok: false, msg: '卡片已不在页面上（翻页或刷新了）' });
+    card.scrollIntoView({ block: 'center' }); await wait(500);
+    const btn = greetButtons(card)[0];
+    if (!btn) return post('greetResult', { uid, ok: false, msg: '没找到打招呼按钮' });
+    if (/继续沟通|已沟通/.test(textOf(btn))) return post('greetResult', { uid, ok: true, msg: '已沟通过' });
+    realClick(btn);
+    for (let k = 0; k < 20; k++) {
+      await wait(500);
+      const b2 = greetButtons(card)[0];
+      if (!document.contains(card) || !b2 || /继续沟通|已沟通/.test(textOf(b2))) return post('greetResult', { uid, ok: true, msg: `打招呼成功${b2 ? `（按钮变为「${textOf(b2)}」）` : ''}` });
+      const tip = [...document.querySelectorAll('[class*="toast"], [class*="message"], [class*="tip"], [class*="dialog"], [class*="modal"]')].find(e => visible(e) && /已发送|成功|已向/.test(textOf(e)));
+      if (tip) return post('greetResult', { uid, ok: true, msg: '打招呼成功（平台提示已发送）' });
+      const dlg = [...document.querySelectorAll('[class*="dialog"], [class*="modal"], [class*="popup"]')].find(e => visible(e) && e.getBoundingClientRect().width > 200 && /招呼|沟通|次数|权益|购买|充值/.test(textOf(e)));
+      if (dlg) return post('greetResult', { uid, ok: false, dialog: true, msg: `点了打招呼，平台弹出窗口：「${textOf(dlg).replace(/\s+/g, ' ').slice(0, 60)}」——请手动处理，已暂停` });
+    }
+    post('greetResult', { uid, ok: false, unverified: true, msg: '点了打招呼，10 秒内没看到变化，未确认成功' });
+  }
+  function moreRec() {
+    const cards = greetButtons().map(cardOf).filter(Boolean);
+    if (cards.length) cards[cards.length - 1].scrollIntoView({ block: 'end' });
+    window.scrollBy(0, 2000);
+    for (const e of document.querySelectorAll('div, ul, section')) if (e.scrollHeight > e.clientHeight + 200 && /(auto|scroll)/.test(getComputedStyle(e).overflowY)) e.scrollTop = e.scrollHeight;
+  }
+  function diagnoseRec() {
+    const btns = greetButtons(), cards = btns.map(cardOf).filter(Boolean);
+    const parsed = cards.slice(0, 20).map(c => { try { return parseCard(c); } catch { return null; } }).filter(Boolean);
+    const has = f => parsed.filter(f).length;
+    const shape = el => el ? { tag: el.tagName, cls: cls(el).slice(0, 60), kids: [...el.children].slice(0, 8).map(k => `${k.tagName}.${cls(k).split(' ')[0]}`) } : null;
+    return {
+      url: location.pathname, frame: window !== window.top, greetButtons: btns.length, cards: cards.length, job: currentRecJob(),
+      cardShape: shape(cards[0]), parentShape: shape(cards[0]?.parentElement),
+      parsed: { n: parsed.length, name: has(p => p.userName), age: has(p => p.age), edu: has(p => p.educationLevel), work: has(p => p.workExperiences.length), school: has(p => p.educationExperiences.length), intent: has(p => p.intentText), fromVue: has(p => p.fromVue), uidHashed: has(p => /^boss-h/.test(p.resumeNumber)) },
+      vueKeys: (() => { const d = cards[0] && vueData(cards[0]); return d ? Object.keys(d).slice(0, 40) : []; })(),
+    };
+  }
+
   // ---------- diagnostics (structure only: class names, counts, short labels) ----------
   function diagnose() {
     const top = (sel, n = 12) => [...document.querySelectorAll(sel)].filter(visible).slice(0, n).map(e => ({ tag: e.tagName, cls: cls(e).slice(0, 80) }));
@@ -298,13 +433,18 @@
     if (d.type === 'native') clickByText(d.name);
     if (d.type === 'send') sendText(String(d.text || ''), d.reqId);
     if (d.type === 'nextUnread') nextUnread(d.reqId, d.skip);
-    if (d.type === 'diagnose') { let r; try { r = diagnose(); } catch (er) { r = { error: String(er && er.message || er) }; } post('diagResult', { reqId: d.reqId, ok: true, data: r }); }
+    if (d.type === 'diagnose') { let r; try { r = isRecPage() ? diagnoseRec() : diagnose(); } catch (er) { r = { error: String(er && er.message || er) }; } post('diagResult', { reqId: d.reqId, ok: true, data: r }); }
+    if (d.type === 'greet') greetRec(d.uid);
+    if (d.type === 'more') moreRec();
+    if (d.type === 'resetVisited') visited.clear();
     if (d.type === 'invite') post('inviteResult', { reqId: d.reqId, ok: false, msg: 'BOSS 直聘的自动发面试邀约还在适配中，请你手动点「约面试」' });
     if (d.type === 'history') collectHistory(d.reqId, d.max);
     if (d.type === 'openBy') openBy(d.reqId, d);
     if (d.type === 'readState') readState(d.reqId);
     if (d.type === 'historyStop') collecting = false;
-    if (d.type === 'reread') { lastSig = ''; readChat(); }
+    if (d.type === 'reread') { lastSig = ''; lastRecSig = ''; isRecPage() ? readRecommend() : readChat(); }
   });
-  setInterval(() => { try { readChat(); } catch (er) { post('error', { msg: String(er && er.message || er) }); } }, 1500);
+  setInterval(() => {
+    try { if (isRecPage()) readRecommend(); else readChat(); } catch (er) { post('error', { msg: String(er && er.message || er) }); }
+  }, 1500);
 })();

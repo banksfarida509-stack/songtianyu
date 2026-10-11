@@ -26,6 +26,8 @@ const ADMIN_USER = process.env.HR_ADMIN_USER || 'admin';
 const ADMIN_PASS = process.env.HR_ADMIN_PASS || '';
 
 const db = openDb(DB_FILE);
+// the extension version shipped with this server; the extension compares itself against it
+const EXT_VERSION = (() => { try { return JSON.parse(fs.readFileSync(path.join(EXT_DIR, 'manifest.json'), 'utf8')).version; } catch { return ''; } })();
 const secret = getSetting(db, 'session_secret');
 
 // ---------- helpers ----------
@@ -149,16 +151,19 @@ route('POST', '/api/ext/ping', 'ext', async (req, res) => {
   const b = await body(req);
   setSetting(db, 'ext_last', { at: nowCN(), page: clip(b.page, 60), version: clip(b.version, 20) });
   const ar = getSetting(db, 'autoReply');
-  send(res, 200, { ok: true, today: todayCN(), auto: { enabled: !!ar.enabled, hours: ar.hours, scanUnread: ar.scanUnread !== false, sentLastHour: autoSentLastHour(), maxPerHour: ar.maxPerHour,
+  send(res, 200, { ok: true, today: todayCN(), extVersion: EXT_VERSION, auto: { enabled: !!ar.enabled, hours: ar.hours, scanUnread: ar.scanUnread !== false, sentLastHour: autoSentLastHour(), maxPerHour: ar.maxPerHour,
     autoInvite: ar.autoInvite !== false, place: getSetting(db, 'org').place } });
 });
 
 // page-structure reports from the extension (no message content), kept for tuning
 route('POST', '/api/ext/diag', 'ext', async (req, res) => {
   const b = await body(req);
-  const kind = ['chat', 'invite'].includes(b.kind) ? b.kind : 'chat';
+  // chat / invite: 智联; boss / bossRec: BOSS直聘 chat / recommend; stall: self-check report when replies stop
+  const kind = ['chat', 'invite', 'boss', 'bossRec', 'rec', 'stall'].includes(b.kind) ? b.kind : 'chat';
   const str = JSON.stringify(b.data ?? null);
-  setSetting(db, `diag_${kind}`, { at: nowCN(), data: str.length > 20000 ? { truncated: true, head: str.slice(0, 20000) } : b.data });
+  const entry = { at: nowCN(), data: str.length > 20000 ? { truncated: true, head: str.slice(0, 20000) } : b.data };
+  if (kind === 'stall') { const prev = getSetting(db, 'diag_stall'); setSetting(db, 'diag_stall', { ...entry, list: [entry, ...((prev && prev.list) || [])].slice(0, 10) }); }
+  else setSetting(db, `diag_${kind}`, entry);
   send(res, 200, { ok: true });
 });
 // ---------- proactive follow-ups ----------
@@ -616,7 +621,7 @@ route('POST', '/api/kb/learn', 'admin', async (req, res) => {
   }
   send(res, 200, r);
 });
-route('GET', '/api/diag', 'admin', (req, res) => send(res, 200, { chat: getSetting(db, 'diag_chat'), invite: getSetting(db, 'diag_invite') }));
+route('GET', '/api/diag', 'admin', (req, res) => send(res, 200, Object.fromEntries(['chat', 'invite', 'boss', 'bossRec', 'rec', 'stall'].map(k => [k, getSetting(db, `diag_${k}`)]))));
 
 route('POST', '/api/settings/rotate-token', 'admin', (req, res) => { const t = randomToken(18); setSetting(db, 'ext_token', t); send(res, 200, { extToken: t }); });
 route('POST', '/api/settings/rescreen', 'admin', (req, res) => {

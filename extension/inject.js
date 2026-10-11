@@ -381,7 +381,8 @@
     const fresh = r => { const v = visited.get(`row:${r.name}`); return !v || Date.now() - v.at > 180000; };
     const row = badgeRows().find(r => r.name && r.name !== cur && !(skip || []).includes(`row:${r.name}`) && fresh(r));
     if (row) { visited.set(`row:${row.name}`, { at: Date.now() }); return openRow(row, reqId); }
-    post('openResult', { reqId, ok: false, none: true, msg: '没有未读会话', sessions: sessionsOf(st).length, badges: badgeRows().length });
+    post('openResult', { reqId, ok: false, none: true, msg: '没有未读会话', sessions: sessionsOf(st).length,
+      badges: badgeRows().filter(r => r.name !== cur).length, unread: sessionsOf(st).filter(s => unreadOf(s) > 0 && !isActive(st, s)).length });
   }
 
   // ---------- follow-ups: open a given candidate's conversation, read our last message's state ----------
@@ -655,6 +656,7 @@
     if (d.type === 'nextUnread') nextUnread(d.reqId, d.skip);
     if (d.type === 'history') collectHistory(d.reqId, d.max);
     if (d.type === 'openBy') openBy(d.reqId, d);
+    if (d.type === 'resetVisited') visited.clear();
     if (d.type === 'readState') readState(d.reqId);
     if (d.type === 'invite') sendInvite(d.reqId, d);
     if (d.type === 'diagnose') { let r; try { r = diagnose(); } catch (er) { r = { error: String(er && er.message || er) }; } post('diagResult', { reqId: d.reqId, ok: true, data: r }); }

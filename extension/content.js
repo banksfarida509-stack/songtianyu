@@ -47,15 +47,19 @@
   // which recruiting site: 智联 (rd6.zhaopin.com) or BOSS直聘 (zhipin.com)
   const PLATFORM = /zhipin\.com$/.test(location.hostname) ? 'boss' : 'zhaopin';
   const SITE = PLATFORM === 'boss' ? 'BOSS直聘' : '智联';
-  const isRec = () => PLATFORM === 'zhaopin' && location.pathname.includes('/app/recommend');
-  const isIm = () => PLATFORM === 'boss' ? /chat/.test(location.pathname) : location.pathname.includes('/app/im');
+  // BOSS 推荐牛人 lives in an iframe (/web/frame/recommend/); the outer page then shows no panel
+  const bossRecHost = () => PLATFORM === 'boss' && window === window.top && !!document.querySelector('iframe[src*="recommend"], iframe[name*="recommend"]');
+  const isRec = () => PLATFORM === 'zhaopin' ? location.pathname.includes('/app/recommend') : /recommend/.test(location.pathname) && !bossRecHost();
+  const isIm = () => PLATFORM === 'boss' ? /chat/.test(location.pathname) && !/recommend/.test(location.pathname) : location.pathname.includes('/app/im');
 
   function rank() {
     return Object.entries(S.results).map(([uid, r]) => ({ uid, ...r })).filter(r => r.verdict === '推荐').sort((a, b) => b.score - a.score);
   }
   function draw() {
     if (S.dead) return;
-    if (PLATFORM === 'boss' && !isIm()) {
+    if (bossRecHost()) { panel.hidden = true; return; }
+    if (PLATFORM === 'boss' && !isIm() && !isRec()) {
+      if (window !== window.top) { panel.hidden = true; return; } // other BOSS iframes: no panel
       panel.hidden = false;
       panel.innerHTML = `<div class="hra-head"><b>AI 招聘副驾</b><span>BOSS直聘</span></div><div class="hra-body"><p class="hra-muted">插件已加载。请打开 BOSS直聘的「沟通」聊天页，插件会读取会话并给出回复建议。${S.err ? `<br><span style="color:#C4313B">${esc(S.err)}</span>` : ''}</p></div>`;
       return;
@@ -66,6 +70,7 @@
     if (S.collapsed) { panel.innerHTML = head; bind(); return; }
     let body = '';
     if (S.err) body += `<div class="hra-err">${esc(S.err)}</div>`;
+    if (S.outdated) body += `<div class="hra-err">插件版本 ${esc(VERSION)} 不是最新（最新 ${esc(S.outdated)}）。请到后台“设置”重新下载插件、解压覆盖原文件夹，再在 chrome://extensions 点刷新 ↻，然后刷新本页。</div>`;
     if (S.risk) body += `<div class="hra-err">检测到平台风控提示（验证 / 操作频繁），已停止所有自动动作，请人工处理。</div>`;
     if (isRec()) body += drawRec();
     if (isIm()) body += drawIm();
@@ -450,6 +455,9 @@
     if (left > 0) return note(waitingOnYou ? `当前会话的建议等你处理，${left} 秒后先去处理其他未读` : `${left} 秒后查找下一个未读会话`);
     note('正在查找未读会话…');
     const r = await callMain('nextUnread', { skip: S.scanSkip }, 'openResult', 30000);
+    // watchdog input: unread shown on the page but none could be picked up
+    if (r.ok) { S.unreadStuckSince = 0; W.resets = 0; }
+    else if (r.none) { if ((r.badges || 0) > 0 || (r.unread || 0) > 0) S.unreadStuckSince = S.unreadStuckSince || Date.now(); else S.unreadStuckSince = 0; }
     if (r.ok) { log(r.msg); note(r.msg); }
     else if (r.failed && r.id) {
       // could not switch to it: skip for 10 minutes instead of retrying every 15 s
@@ -499,7 +507,56 @@
   setInterval(patrol, 5000);
   let lastPath = location.pathname;
   setInterval(() => { if (location.pathname !== lastPath) { lastPath = location.pathname; S.draft = null; S.chat = null; S.pending = null; draw(); toMain('reread'); } }, 1000);
+  // ---------- version alignment ----------
+  const newer = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
+  function checkVersion(latest) {
+    if (!latest || !newer(latest, VERSION) || S.outdated === latest) return;
+    S.outdated = latest;
+    chrome.runtime.sendMessage({ type: 'selfUpdate', target: latest }, r => {
+      if (r && r.started) log(`发现新版插件 ${latest}，正在自动更新并刷新页面…`);
+      else { log(`插件版本 ${VERSION} 不是最新（${latest}），需要重新下载插件`); draw(); }
+    });
+  }
+
+  // ---------- watchdog: keep the automation moving, report when it stalls ----------
+  const W = { busySince: 0, patrolSince: 0, resets: 0 };
+  async function report(kind, extra) {
+    let page = null;
+    try { page = (await callMain('diagnose', {}, 'diagResult', 8000)).data; } catch { /* page data optional */ }
+    api('/ext/diag', { kind, data: { version: VERSION, platform: PLATFORM, path: location.pathname, frame: window !== window.top,
+      state: { busy: S.busy, pending: !!S.pending, sending: S.sending, collecting: !!S.collecting, autoPaused: S.autoPaused, risk: S.risk, auto: S.auto, patrolNote: S.patrolNote, chat: S.chat ? { name: S.chat.name, n: S.chat.messages.length, lastDir: S.chat.messages.at(-1)?.dir } : null },
+      log: S.log.slice(0, 20), page, ...extra } });
+  }
+  setInterval(async () => {
+    if (S.dead) return;
+    const now = Date.now();
+    // an API call or a send that never came back
+    if (S.busy) { W.busySince = W.busySince || now; if (now - W.busySince > 90000) { S.busy = false; W.busySince = 0; log('自检：AI 回复等待超时，已复位'); report('stall', { why: 'busy timeout' }); } } else W.busySince = 0;
+    if (S.pending && now - S.pending.due > 60000) { S.pending = null; log('自检：自动发送没有触发，已复位'); report('stall', { why: 'pending missed' }); }
+    if (patrolling) { W.patrolSince = W.patrolSince || now; if (now - W.patrolSince > 90000) { patrolling = false; W.patrolSince = 0; log('自检：巡检卡住，已复位'); } } else W.patrolSince = 0;
+    // unread messages are there but nothing gets opened for 4 minutes
+    if (S.auto?.enabled && !S.autoPaused && S.unreadStuckSince && now - S.unreadStuckSince > 240000) {
+      S.unreadStuckSince = now; W.resets++;
+      log(`自检：有未读消息但 4 分钟没有处理，已自动复位（第 ${W.resets} 次）并上报`);
+      report('stall', { why: 'unread not handled', resets: W.resets });
+      toMain('resetVisited');
+      if (W.resets >= 2) {
+        let last = 0; try { last = +sessionStorage.getItem('hraReloadAt') || 0; } catch { /* ignore */ }
+        if (now - last > 1800000) { try { sessionStorage.setItem('hraReloadAt', String(now)); } catch { /* ignore */ } log('自检：仍未恢复，刷新页面'); setTimeout(() => location.reload(), 1500); }
+      }
+    }
+  }, 30000);
+  // page structure report once every 6 hours per page type, so adapters can be tuned without asking the recruiter
+  setTimeout(async () => {
+    if (S.dead || (!isIm() && !isRec())) return;
+    const kind = PLATFORM === 'boss' ? (isRec() ? 'bossRec' : 'boss') : (isRec() ? 'rec' : 'chat');
+    const key = `diagAt_${kind}_${VERSION}`;
+    try { const v = await chrome.storage.local.get(key); if (Date.now() - (v[key] || 0) < 6 * 3600e3) return; await chrome.storage.local.set({ [key]: Date.now() }); } catch { return; }
+    report(kind, { auto: true });
+  }, 20000);
+
   const ping = () => api('/ext/ping', { page: location.pathname, version: VERSION }).then(r => {
+    if (r.data?.extVersion) checkVersion(r.data.extVersion);
     S.err = r.error || (S.err.startsWith('连不上') || S.err.startsWith('插件') ? '' : S.err);
     if (r.data?.auto) { const was = S.auto?.enabled; S.auto = r.data.auto; if (was === false && S.auto.enabled) log('后台已开启全自动回复'); }
     draw();
