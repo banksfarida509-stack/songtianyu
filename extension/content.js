@@ -404,7 +404,11 @@
       // could not switch to it: skip for 10 minutes instead of retrying every 15 s
       S.scanSkip.push(r.id); setTimeout(() => { S.scanSkip = S.scanSkip.filter(x => x !== r.id); }, 600000);
       addTodoFor(r.id, r.msg); log(r.msg); note(r.msg);
-    } else if (r.none) note(`没有未读会话（读到会话 ${r.sessions ?? '?'} 个、红色角标 ${r.badges ?? '?'} 个）`);
+    } else if (r.none) {
+      const t = `没有未读会话（读到会话 ${r.sessions ?? '?'} 个、红色角标 ${r.badges ?? '?'} 个）`;
+      note(t);
+      if (t !== S.lastNoneLog) { S.lastNoneLog = t; log(`巡检：${t}`); }
+    }
     else { log(r.msg); note(r.msg); }
   }
   ['mousedown', 'keydown', 'wheel'].forEach(t => document.addEventListener(t, e => { if (e.isTrusted && !panel.contains(e.target)) S.userAt = Date.now(); }, true));

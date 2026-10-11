@@ -184,7 +184,16 @@
     for (let k = 0; k < 10; k++) { await wait(300); if (!ta.value.trim()) return post('sendResult', { reqId, ok: true, msg: '已发送' }); }
     post('sendResult', { reqId, ok: false, msg: '点了发送，但输入框没清空，可能被平台拦截，请看一下页面' });
   }
-  const unreadOf = s => { for (const [k, v] of Object.entries(s || {})) if (/unread/i.test(k) && typeof v === 'number') return v; return 0; };
+  // unread count of a session: a key containing “unread” at the top level or one level down,
+  // as a number or a numeric string
+  const unreadOf = s => {
+    const num = v => (typeof v === 'number' ? v : typeof v === 'string' && /^\d+$/.test(v) ? +v : null);
+    for (const [k, v] of Object.entries(s || {})) {
+      if (/un_?read/i.test(k) && num(v) != null) return num(v);
+      if (v && typeof v === 'object' && !Array.isArray(v)) for (const [k2, v2] of Object.entries(v)) if (/un_?read/i.test(k2) && num(v2) != null) return num(v2);
+    }
+    return 0;
+  };
   const sessId = s => s && (s.sessionId || s.id || s.sessionID);
   const nameOf = s => (s && (s.name || s.userName || s.nickName || s.nick || s.candidateName)) || '';
   // the conversation list: usually state.im.sessions, otherwise the array (or id→session map)
@@ -277,14 +286,29 @@
   // sessions whose row in the left list shows a red number badge (when the unread
   // count is not readable from the store)
   // rows in the left list that show a red number badge (unread), top to bottom
+  // a small red element with just a number in it, in the left part of the page
+  function isRedBadge(e) {
+    if (!/^\d{1,3}\+?$/.test((e.innerText || '').trim())) return false;
+    const r = e.getBoundingClientRect();
+    if (!r.width || r.width > 40 || r.height > 30 || r.left > window.innerWidth * 0.45) return false;
+    for (let el = e, k = 0; el && k < 3; el = el.parentElement, k++) {
+      const m = getComputedStyle(el).backgroundColor.match(/\d+/g);
+      if (m && +m[0] > 180 && +m[1] < 130 && +m[2] < 130 && (m[3] === undefined || +m[3] > 0)) return true;
+    }
+    return false;
+  }
   function badgeRows() {
-    const badges = [...document.querySelectorAll('[class*="badge"], [class*="unread"], [class*="count"], [class*="num"], [class*="dot"], sup')]
+    const byClass = [...document.querySelectorAll('[class*="badge"], [class*="unread"], [class*="count"], [class*="num"], [class*="dot"], sup')]
       .filter(e => visible(e) && /^\d{1,3}\+?$/.test((e.innerText || '').trim()) && e.getBoundingClientRect().left < window.innerWidth * 0.45);
+    // class names vary: also look for any small red number in the list area
+    const byLook = [...document.querySelectorAll('span, div, i, em, sup, b')].filter(e => e.children.length === 0 && visible(e) && isRedBadge(e));
+    const badges = [...new Set([...byClass, ...byLook])];
     const rows = [];
     for (const b of badges) {
       let row = b;
-      // climb to the list row: the ancestor that is about as tall as one conversation entry
-      for (let k = 0; k < 10 && row && row.getBoundingClientRect().height < 50; k++) row = row.parentElement;
+      // climb to the list row: the badge sits on the avatar, so go up until the element
+      // also holds the name (Chinese text) and is about one entry tall
+      for (let k = 0; k < 12 && row && (row.getBoundingClientRect().height < 50 || !/[一-龥]{2,}/.test(row.innerText || '')); k++) row = row.parentElement;
       if (!row || row.getBoundingClientRect().height > 160) continue;
       // first word that is not the badge number or the “在线” tag
       const name = (row.innerText || '').trim().split(/\s+/).find(w => !/^\d+\+?$/.test(w) && w !== '在线') || '';
