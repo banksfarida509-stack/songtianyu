@@ -89,9 +89,21 @@
   // hover first, then look for a visible button by its text.
   const wait = ms => new Promise(r => setTimeout(r, ms));
   const visible = e => !!(e && e.offsetParent && e.getClientRects().length);
+  const GREET_RE = /^(打招呼|继续沟通|已沟通|立即沟通)$/;
+  // Pick the innermost visible element with the label, preferring a real <button>
+  // (clicking the wrapper div does not reach the platform's click handler).
   function findGreetBtn(scope) {
-    const pool = [...scope.querySelectorAll('.cv-test-recommend-chat button, .cv-test-recommend-chat .resume-button, .recommend-item__action button, button, .resume-button')];
-    return pool.find(b => visible(b) && /^(打招呼|继续沟通|已沟通|立即沟通)$/.test((b.innerText || '').trim()));
+    const hits = [...scope.querySelectorAll('button, .resume-button, .km-button, [role="button"]')]
+      .filter(b => visible(b) && GREET_RE.test((b.innerText || '').trim()));
+    const inner = hits.filter(b => !hits.some(o => o !== b && b.contains(o)));
+    return inner.find(b => b.tagName === 'BUTTON') || inner.find(b => b.closest('button')) || inner[0] || null;
+  }
+  function realClick(b) {
+    const r = b.getBoundingClientRect();
+    const o = { bubbles: true, cancelable: true, view: window, button: 0, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+    b.dispatchEvent(new PointerEvent('pointerdown', o)); b.dispatchEvent(new MouseEvent('mousedown', o));
+    b.dispatchEvent(new PointerEvent('pointerup', o)); b.dispatchEvent(new MouseEvent('mouseup', o));
+    b.click();
   }
   function hover(el) {
     const r = el.getBoundingClientRect();
@@ -110,11 +122,16 @@
     for (let k = 0; k < 10 && !btn; k++) { hover(scope); hover(el); await wait(200); btn = findGreetBtn(scope); }
     if (!btn) return post('greetResult', { uid, ok: false, msg: '没找到打招呼按钮（悬停后仍未出现）' });
     if (/继续沟通|已沟通/.test(btn.innerText || '')) return post('greetResult', { uid, ok: true, msg: '已沟通过' });
-    btn.click();
-    await wait(1200);
+    const desc = `${btn.tagName.toLowerCase()}.${String(btn.className || '').split(/\s+/).slice(0, 2).join('.')}`;
+    realClick(btn);
+    await wait(1500);
     const dlg = openDialogText();
     if (dlg) return post('greetResult', { uid, ok: false, dialog: true, msg: `点了打招呼，平台弹出窗口：「${dlg}」——请手动处理，已暂停` });
-    post('greetResult', { uid, ok: true, msg: '已点打招呼' });
+    // verify: the label should change to 继续沟通 (or the page jumps to chat)
+    let after = '';
+    for (let k = 0; k < 5; k++) { hover(scope); await wait(300); const b2 = findGreetBtn(scope); after = b2 ? b2.innerText.trim() : ''; if (after && after !== '打招呼') break; }
+    if (!location.pathname.includes('/app/recommend') || /继续沟通|已沟通/.test(after)) return post('greetResult', { uid, ok: true, msg: `打招呼成功（按钮变为「${after || '已跳转'}」）` });
+    post('greetResult', { uid, ok: false, unverified: true, msg: `点了 ${desc}，但按钮仍是「${after || '未知'}」，平台可能没收到，已暂停` });
   }
   // platform risk-control signals → content script stops automation
   function riskSignal() {

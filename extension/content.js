@@ -129,7 +129,7 @@
       const res = await new Promise(ok => { const h = e => { if (e.data?.__hra === 'main' && e.data.type === 'greetResult' && e.data.data.uid === r.uid) { window.removeEventListener('message', h); ok(e.data.data); } }; window.addEventListener('message', h); toMain('greet', { uid: r.uid }); setTimeout(() => ok({ ok: false, msg: '超时' }), 10000); });
       log(`${r.name}：${res.msg}`);
       if (res.ok) { S.results[r.uid].greeted = true; paintLines(); draw(); }
-      if (res.dialog) { S.stop = true; break; }
+      if (res.dialog || res.unverified || !isRec()) { S.stop = true; break; }
       const wait = 15000 + Math.random() * 15000;
       for (let t = 0; t < wait && !S.stop && !S.risk; t += 500) await sleep(500);
     }
