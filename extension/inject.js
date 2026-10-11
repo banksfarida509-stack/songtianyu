@@ -85,12 +85,35 @@
     b.click();
     post('actionResult', { ok: true, msg: `已点平台“${name}”，请在弹出的窗口里完成` });
   }
-  function greet(uid) {
+  // The card's action buttons are only rendered while the mouse is over it, so
+  // hover first, then look for a visible button by its text.
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  const visible = e => !!(e && e.offsetParent && e.getClientRects().length);
+  function findGreetBtn(scope) {
+    const pool = [...scope.querySelectorAll('.cv-test-recommend-chat button, .cv-test-recommend-chat .resume-button, .recommend-item__action button, button, .resume-button')];
+    return pool.find(b => visible(b) && /^(打招呼|继续沟通|已沟通|立即沟通)$/.test((b.innerText || '').trim()));
+  }
+  function hover(el) {
+    const r = el.getBoundingClientRect();
+    const o = { bubbles: true, cancelable: true, view: window, clientX: r.left + r.width / 2, clientY: r.top + Math.min(40, r.height / 2) };
+    for (const t of ['pointerover', 'pointerenter', 'mouseover', 'mouseenter', 'pointermove', 'mousemove']) el.dispatchEvent(new (t.startsWith('pointer') ? PointerEvent : MouseEvent)(t, o));
+  }
+  function openDialogText() {
+    const d = [...document.querySelectorAll('.km-modal, .km-dialog, [role="dialog"], .el-dialog, .km-popover')].find(visible);
+    return d ? (d.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 80) : '';
+  }
+  async function greet(uid) {
     const el = document.querySelector(`[data-hra-uid="${CSS.escape(uid)}"]`);
-    const btn = el && (el.closest('.recommend-item')?.querySelector('.cv-test-recommend-chat button') || el.querySelector('.cv-test-recommend-chat button'));
-    if (!btn) return post('greetResult', { uid, ok: false, msg: '没找到打招呼按钮' });
+    if (!el) return post('greetResult', { uid, ok: false, msg: '卡片已不在页面上（翻页或刷新了）' });
+    const scope = el.closest('.recommend-item') || el;
+    let btn = null;
+    for (let k = 0; k < 10 && !btn; k++) { hover(scope); hover(el); await wait(200); btn = findGreetBtn(scope); }
+    if (!btn) return post('greetResult', { uid, ok: false, msg: '没找到打招呼按钮（悬停后仍未出现）' });
     if (/继续沟通|已沟通/.test(btn.innerText || '')) return post('greetResult', { uid, ok: true, msg: '已沟通过' });
     btn.click();
+    await wait(1200);
+    const dlg = openDialogText();
+    if (dlg) return post('greetResult', { uid, ok: false, dialog: true, msg: `点了打招呼，平台弹出窗口：「${dlg}」——请手动处理，已暂停` });
     post('greetResult', { uid, ok: true, msg: '已点打招呼' });
   }
   // platform risk-control signals → content script stops automation
