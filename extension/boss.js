@@ -337,13 +337,14 @@
     // an id for the candidate: a geek / uid attribute, a link parameter, the component's id field, or a hash of the card
     let uid = '';
     for (const el of [card, ...card.querySelectorAll('[data-geekid], [data-uid], [data-id], [data-lid], [data-securityid], a[href]')]) {
-      for (const a of el.attributes || []) if (/geek|uid|lid|security|encrypt/i.test(a.name) && a.value.length > 4) { uid = a.value; break; }
+      // skip our own data-hra-* marks (reading them back made a new id every pass)
+      for (const a of el.attributes || []) if (!/^data-hra/i.test(a.name) && /geek|uid|lid|security|encrypt/i.test(a.name) && a.value.length > 4) { uid = a.value; break; }
       if (!uid && el.tagName === 'A') { const m = (el.getAttribute('href') || '').match(/(?:geek|uid|id)=([\w-]{6,})/i); if (m) uid = m[1]; }
       if (uid) break;
     }
     if (!uid && d) uid = strIn(d, /^(encryptGeekId|geekId|securityId|uid|encryptUid|expectId|lid)$/i);
     if (!uid) uid = 'h' + [...`${out.userName}|${out.age}|${out.educationLevel}|${out.workExperiences[0]?.companyName || ''}|${out.educationExperiences[0]?.schoolName || ''}`].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7).toString(36);
-    return { resumeNumber: `boss-${uid}`, ...out, fromVue: !!d };
+    return { resumeNumber: `boss-${String(uid).replace(/^(boss-)+/, '')}`, ...out, fromVue: !!d };
   }
   function currentRecJob() {
     const docs = [document]; try { if (window.top !== window && window.top.document) docs.push(window.top.document); } catch { /* cross-origin */ }

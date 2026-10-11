@@ -29,7 +29,8 @@ export function normalizeZhaopin(raw) {
   }));
   const top = edus[0] || {};
   return {
-    uid: String(raw.resumeNumber || raw.uid || ''),
+    // collapse a repeated platform prefix (an extension bug once produced “boss-boss-…-id”)
+    uid: String(raw.resumeNumber || raw.uid || '').replace(/^(boss-)+/, 'boss-'),
     name: clip(raw.userName || raw.name, 20),
     gender: raw.gender ? clip(raw.gender, 4) : null,
     age: num(raw.age),

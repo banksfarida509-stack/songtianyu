@@ -131,6 +131,7 @@ export function openDb(file) {
   const ccols = db.prepare('PRAGMA table_info(candidates)').all().map(c => c.name);
   if (!ccols.includes('greeted_ms')) db.exec('ALTER TABLE candidates ADD COLUMN greeted_ms INTEGER');
   if (!ccols.includes('followup_json')) db.exec('ALTER TABLE candidates ADD COLUMN followup_json TEXT');
+  dedupeBossIds(db);
   // job roles: each candidate and each knowledge-base document belongs to a role (通用 = all)
   if (!db.prepare('PRAGMA table_info(candidates)').all().some(c => c.name === 'role')) db.exec("ALTER TABLE candidates ADD COLUMN role TEXT NOT NULL DEFAULT 'teacher'");
   if (!db.prepare('PRAGMA table_info(kb_docs)').all().some(c => c.name === 'role')) db.exec("ALTER TABLE kb_docs ADD COLUMN role TEXT NOT NULL DEFAULT 'all'");
@@ -158,6 +159,41 @@ export function openDb(file) {
     ['何静', '李卓', '王磊', '赵宁', '刘芳', '陈曦', '孙悦', '周航'].forEach((nm, i) => ins.run(nm, i));
   }
   return db;
+}
+
+/**
+ * One-off repair: an extension bug stored the same BOSS candidate under ids like
+ * “boss-boss-…-<geekId>”. Group by the real id, keep one row per person (the one with
+ * chat messages / appointments / staff changes, else the newest), point its uid at
+ * “boss-<geekId>”, and delete the other copies.
+ */
+function dedupeBossIds(db) {
+  const rows = db.prepare("SELECT id, uid, updated_at FROM candidates WHERE platform='boss' AND uid LIKE 'boss-boss-%'").all();
+  if (!rows.length) return;
+  const real = uid => 'boss-' + uid.replace(/^(boss-)+/, '');
+  const groups = new Map();
+  for (const r of rows) { const k = real(r.uid); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); }
+  const weight = id => db.prepare('SELECT COUNT(*) n FROM messages WHERE candidate_id=?').get(id).n * 100
+    + db.prepare('SELECT COUNT(*) n FROM appointments WHERE candidate_id=?').get(id).n * 100
+    + (db.prepare("SELECT reason_by, attend FROM candidates WHERE id=?").get(id).attend !== '未联系' ? 10 : 0);
+  const tx = db.prepare('BEGIN'); tx.run();
+  try {
+    for (const [k, list] of groups) {
+      const existing = db.prepare("SELECT id FROM candidates WHERE platform='boss' AND uid=?").get(k);
+      const all = existing ? [existing, ...list] : list;
+      const keep = all.map(r => ({ id: r.id, w: weight(r.id), t: r.updated_at || '' })).sort((a, b) => b.w - a.w || (b.t > a.t ? 1 : -1))[0].id;
+      for (const r of all) {
+        if (r.id === keep) continue;
+        // move anything attached to the copy onto the kept row, then drop the copy
+        db.prepare('UPDATE OR IGNORE messages SET candidate_id=? WHERE candidate_id=?').run(keep, r.id);
+        db.prepare('UPDATE events SET candidate_id=? WHERE candidate_id=?').run(keep, r.id);
+        db.prepare('UPDATE appointments SET candidate_id=? WHERE candidate_id=?').run(keep, r.id);
+        db.prepare('DELETE FROM candidates WHERE id=?').run(r.id);
+      }
+      db.prepare('UPDATE candidates SET uid=? WHERE id=?').run(k, keep);
+    }
+    db.prepare('COMMIT').run();
+  } catch (e) { db.prepare('ROLLBACK').run(); console.error('[db] dedupe boss ids failed:', e.message); }
 }
 
 export function getSetting(db, key) {
