@@ -1,7 +1,11 @@
 /* All selectors are prefixed hra- so nothing leaks into the platform page. */
 #hra-panel{position:fixed;right:16px;bottom:16px;z-index:2147483000;width:320px;max-height:calc(100vh - 32px);display:flex;flex-direction:column;background:#fff;border:1px solid #E6E8EC;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.14);font:13px/1.55 "PingFang SC","Microsoft YaHei",system-ui,sans-serif;color:#1F2329;overflow:hidden}
 #hra-panel[hidden]{display:none}
-#hra-panel .hra-head{display:flex;align-items:center;gap:8px;background:#D0161F;color:#fff;padding:9px 12px}
+#hra-panel .hra-head{display:flex;align-items:center;gap:8px;background:#D0161F;color:#fff;padding:9px 12px;cursor:move;user-select:none}
+#hra-panel .hra-head .hra-x+.hra-x{margin-left:0}
+#hra-panel.mini{width:auto;background:transparent;border:0;box-shadow:none;overflow:visible}
+#hra-panel .hra-pill{position:relative;width:52px;height:52px;border-radius:50%;border:0;background:#D0161F;color:#fff;font:600 15px/1 "PingFang SC","Microsoft YaHei",sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.25);cursor:move}
+#hra-panel .hra-pill i{position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;border-radius:9px;background:#fff;color:#D0161F;font:600 11px/18px sans-serif;font-style:normal;box-shadow:0 1px 4px rgba(0,0,0,.2)}
 #hra-panel .hra-head span{font-size:12px;opacity:.85}
 #hra-panel .hra-x{margin-left:auto;background:rgba(255,255,255,.18);border:0;color:#fff;border-radius:6px;padding:2px 8px;font-size:12px;cursor:pointer}
 #hra-panel .hra-body{padding:10px 12px;overflow:auto;display:flex;flex-direction:column;gap:8px}

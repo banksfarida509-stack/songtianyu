@@ -47,27 +47,74 @@
   // which recruiting site: 智联 (rd6.zhaopin.com) or BOSS直聘 (zhipin.com)
   const PLATFORM = /zhipin\.com$/.test(location.hostname) ? 'boss' : 'zhaopin';
   const SITE = PLATFORM === 'boss' ? 'BOSS直聘' : '智联';
-  // BOSS 推荐牛人 lives in an iframe (/web/frame/recommend/); the outer page then shows no panel
-  const bossRecHost = () => PLATFORM === 'boss' && window === window.top && !!document.querySelector('iframe[src*="recommend"], iframe[name*="recommend"]');
-  const isRec = () => PLATFORM === 'zhaopin' ? location.pathname.includes('/app/recommend') : /recommend/.test(location.pathname) && !bossRecHost();
-  const isIm = () => PLATFORM === 'boss' ? /chat/.test(location.pathname) && !/recommend/.test(location.pathname) : location.pathname.includes('/app/im');
+  // BOSS pages embed iframes; the script runs in each of them. Only one panel per tab:
+  // the 推荐牛人 iframe shows the recommend panel, the top page shows the chat panel,
+  // and the top page steps aside whenever an inner frame already shows a panel.
+  const IN_FRAME = window !== window.top;
+  const childPanelShown = () => {
+    if (IN_FRAME) return false;
+    for (const f of document.querySelectorAll('iframe')) {
+      try { const p = f.contentDocument && f.contentDocument.getElementById('hra-panel'); if (p && !p.hidden) return true; } catch { /* cross-origin frame */ }
+    }
+    return false;
+  };
+  const isRec = () => PLATFORM === 'zhaopin' ? location.pathname.includes('/app/recommend')
+    : /recommend/.test(location.pathname) && (IN_FRAME || !document.querySelector('iframe[src*="recommend"], iframe[name*="recommend"]'));
+  const isIm = () => PLATFORM === 'boss' ? !IN_FRAME && /chat/.test(location.pathname) && !/recommend/.test(location.pathname) : location.pathname.includes('/app/im');
+
+  // ---------- panel position: drag the red title bar; double-click it to reset; remembered per site ----------
+  const POS_KEY = `hraPanel_${PLATFORM}_${IN_FRAME ? 'frame' : 'top'}`;
+  function placePanel() {
+    const p = S.pos;
+    if (p && Number.isFinite(p.left) && Number.isFinite(p.top)) {
+      const w = panel.offsetWidth || 320, h = panel.offsetHeight || 60;
+      panel.style.left = Math.max(0, Math.min(p.left, window.innerWidth - Math.min(w, 120))) + 'px';
+      panel.style.top = Math.max(0, Math.min(p.top, window.innerHeight - Math.min(h, 40))) + 'px';
+      panel.style.right = 'auto'; panel.style.bottom = 'auto';
+    } else { panel.style.left = panel.style.top = ''; panel.style.right = ''; panel.style.bottom = ''; }
+  }
+  const savePanel = () => { try { chrome.storage.local.set({ [POS_KEY]: { pos: S.pos || null, mini: !!S.mini } }); } catch { /* not saved */ } };
+  try { chrome.storage.local.get(POS_KEY).then(v => { const o = v[POS_KEY] || {}; S.pos = o.pos || null; S.mini = !!o.mini; draw(); }); } catch { /* defaults */ }
+  let drag = null;
+  panel.addEventListener('mousedown', e => {
+    const handle = e.target.closest('.hra-head, .hra-pill');
+    if (!handle || e.target.closest('button:not(.hra-pill)') || e.button !== 0) return;
+    const r = panel.getBoundingClientRect();
+    drag = { dx: e.clientX - r.left, dy: e.clientY - r.top, x0: e.clientX, y0: e.clientY, moved: false };
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', e => {
+    if (!drag) return;
+    if (Math.abs(e.clientX - drag.x0) + Math.abs(e.clientY - drag.y0) > 4) drag.moved = true;
+    if (!drag.moved) return;
+    S.pos = { left: e.clientX - drag.dx, top: e.clientY - drag.dy };
+    placePanel();
+  });
+  window.addEventListener('mouseup', () => { if (drag && drag.moved) { savePanel(); panel.dataset.dragged = '1'; setTimeout(() => { delete panel.dataset.dragged; }, 0); } drag = null; });
+  panel.addEventListener('dblclick', e => { if (e.target.closest('.hra-head') && !e.target.closest('button')) { S.pos = null; placePanel(); savePanel(); } });
+  window.addEventListener('resize', () => placePanel());
 
   function rank() {
     return Object.entries(S.results).map(([uid, r]) => ({ uid, ...r })).filter(r => r.verdict === '推荐').sort((a, b) => b.score - a.score);
   }
   function draw() {
     if (S.dead) return;
-    if (bossRecHost()) { panel.hidden = true; return; }
+    if (childPanelShown()) { panel.hidden = true; return; }
     if (PLATFORM === 'boss' && !isIm() && !isRec()) {
-      if (window !== window.top) { panel.hidden = true; return; } // other BOSS iframes: no panel
+      if (IN_FRAME) { panel.hidden = true; return; } // other BOSS iframes: no panel
       panel.hidden = false;
-      panel.innerHTML = `<div class="hra-head"><b>AI 招聘副驾</b><span>BOSS直聘</span></div><div class="hra-body"><p class="hra-muted">插件已加载。请打开 BOSS直聘的「沟通」聊天页，插件会读取会话并给出回复建议。${S.err ? `<br><span style="color:#C4313B">${esc(S.err)}</span>` : ''}</p></div>`;
+      panel.classList.remove('mini');
+      panel.innerHTML = `<div class="hra-head"><b>AI 招聘副驾</b><span>BOSS直聘</span></div><div class="hra-body"><p class="hra-muted">插件已加载。请打开 BOSS直聘的「沟通」聊天页或「推荐牛人」页。${S.err ? `<br><span style="color:#C4313B">${esc(S.err)}</span>` : ''}</p></div>`;
+      placePanel();
       return;
     }
     if (!isRec() && !isIm()) { panel.hidden = true; return; }
     panel.hidden = false;
-    const head = `<div class="hra-head"><b>AI 招聘副驾</b><span>${SITE} · ${isRec() ? '推荐页 · 初筛' : '聊天页 · 约聊'}</span><button class="hra-x" data-a="toggle">${S.collapsed ? '展开' : '收起'}</button></div>`;
-    if (S.collapsed) { panel.innerHTML = head; bind(); return; }
+    // minimized: a small round button that can be dragged anywhere
+    panel.classList.toggle('mini', !!S.mini);
+    if (S.mini) { panel.innerHTML = `<button class="hra-pill" data-a="mini" title="展开 AI 招聘副驾（可拖动）">AI${S.todo.length ? `<i>${S.todo.length}</i>` : ''}</button>`; bind(); placePanel(); return; }
+    const head = `<div class="hra-head" title="按住拖动；双击回到默认位置"><b>AI 招聘副驾</b><span>${SITE} · ${isRec() ? '推荐页 · 初筛' : '聊天页 · 约聊'}</span><button class="hra-x" data-a="toggle">${S.collapsed ? '展开' : '收起'}</button><button class="hra-x" data-a="mini" title="缩成小按钮">—</button></div>`;
+    if (S.collapsed) { panel.innerHTML = head; bind(); placePanel(); return; }
     let body = '';
     if (S.err) body += `<div class="hra-err">${esc(S.err)}</div>`;
     if (S.outdated) body += `<div class="hra-err">插件版本 ${esc(VERSION)} 不是最新（最新 ${esc(S.outdated)}）。请到后台“设置”重新下载插件、解压覆盖原文件夹，再在 chrome://extensions 点刷新 ↻，然后刷新本页。</div>`;
@@ -79,7 +126,10 @@
     panel.innerHTML = head + `<div class="hra-body">${body}</div>`;
     if (open) panel.querySelector('.hra-log').open = true;
     bind();
+    placePanel();
   }
+  // BOSS top page: step aside as soon as an inner frame shows its panel (and come back if it goes away)
+  if (PLATFORM === 'boss' && !IN_FRAME) setInterval(() => { const child = childPanelShown(); if (child && !panel.hidden) panel.hidden = true; else if (!child && panel.hidden && (isIm() || isRec())) draw(); }, 3000);
   function drawRec() {
     const all = Object.values(S.results);
     const n = v => all.filter(r => r.verdict === v).length;
@@ -162,6 +212,7 @@
   }
   async function act(a) {
     if (a === 'toggle') { S.collapsed = !S.collapsed; return draw(); }
+    if (a === 'mini') { if (panel.dataset.dragged) return; S.mini = !S.mini; savePanel(); return draw(); }
     if (a === 'greet') { S.confirmGreet = true; return draw(); }
     if (a === 'greet-cancel') { S.confirmGreet = false; return draw(); }
     if (a.startsWith('gap:')) {
