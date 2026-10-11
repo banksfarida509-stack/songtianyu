@@ -143,11 +143,19 @@
     if (stayed) { await wait(900); return post('greetResult', { uid, ok: true, msg: `打招呼成功（已自动点「${stayed}」）` }); }
     const dlg = openDialogText();
     if (dlg) return post('greetResult', { uid, ok: false, dialog: true, msg: `点了打招呼，平台弹出窗口：「${dlg}」——请手动处理，已暂停` });
-    // verify: the label should change to 继续沟通 (or the page jumps to chat)
+    // verify for up to ~10 s: the platform updates the label slowly, or drops
+    // the greeted card from the list, or jumps to chat. Any of these = success.
     let after = '';
-    for (let k = 0; k < 5; k++) { hover(scope); await wait(300); const b2 = findGreetBtn(scope); after = b2 ? b2.innerText.trim() : ''; if (after && after !== '打招呼') break; }
-    if (!location.pathname.includes('/app/recommend') || /继续沟通|已沟通/.test(after)) return post('greetResult', { uid, ok: true, msg: `打招呼成功（按钮变为「${after || '已跳转'}」）` });
-    post('greetResult', { uid, ok: false, unverified: true, msg: `点了 ${desc}，但按钮仍是「${after || '未知'}」，平台可能没收到，已暂停` });
+    for (let k = 0; k < 20; k++) {
+      if (!location.pathname.includes('/app/recommend')) return post('greetResult', { uid, ok: true, msg: '打招呼成功（页面已跳转）' });
+      const st = clickStay(); if (st) { await wait(900); return post('greetResult', { uid, ok: true, msg: `打招呼成功（已自动点「${st}」）` }); }
+      const cur = document.querySelector(`[data-hra-uid="${CSS.escape(uid)}"]`);
+      if (!cur || !document.contains(scope)) return post('greetResult', { uid, ok: true, msg: '打招呼成功（卡片已移出推荐列表）' });
+      hover(scope); await wait(500);
+      const b2 = findGreetBtn(scope); after = b2 ? b2.innerText.trim() : '';
+      if (/继续沟通|已沟通/.test(after)) return post('greetResult', { uid, ok: true, msg: `打招呼成功（按钮变为「${after}」）` });
+    }
+    post('greetResult', { uid, ok: false, unverified: true, msg: `点了 ${desc}，10 秒内按钮仍是「${after || '未知'}」，未确认成功` });
   }
   // platform risk-control signals → content script stops automation
   function riskSignal() {

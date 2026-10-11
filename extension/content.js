@@ -132,9 +132,10 @@
   async function greetLoop() {
     S.greeting = true; S.stop = false; S.done = 0; S.phase = ''; draw();
     const skip = new Set();
-    let dry = 0, why = '';
+    let dry = 0, why = '', fails = 0;
+    const onPage = uid => !!document.querySelector(`[data-hra-uid="${CSS.escape(uid)}"]`);
     while (S.done < S.target && !S.stop && !S.risk) {
-      const r = rank().find(x => !x.greeted && !skip.has(x.uid));
+      const r = rank().find(x => !x.greeted && !skip.has(x.uid) && onPage(x.uid));
       if (!r) {
         if (++dry > 4) { why = '当前岗位已没有更多 AI 推荐的候选人'; break; }
         S.phase = '加载更多候选人…'; draw();
@@ -147,11 +148,13 @@
       await sleep(1200);
       const res = await new Promise(ok => { const h = e => { if (e.data?.__hra === 'main' && e.data.type === 'greetResult' && e.data.data.uid === r.uid) { window.removeEventListener('message', h); ok(e.data.data); } }; window.addEventListener('message', h); toMain('greet', { uid: r.uid }); setTimeout(() => ok({ ok: false, msg: '超时' }), 12000); });
       log(`${r.name}：${res.msg}`);
-      if (res.ok) { S.results[r.uid].greeted = true; if (!/已沟通过/.test(res.msg)) S.done++; paintLines(); draw(); }
+      if (res.ok) { S.results[r.uid].greeted = true; if (!/已沟通过/.test(res.msg)) { S.done++; fails = 0; } paintLines(); draw(); }
       else skip.add(r.uid);
-      if (res.dialog || res.unverified || !isRec()) { S.stop = true; why = '需要人工处理（见上一条日志）'; break; }
+      if (res.dialog) { S.stop = true; why = '平台弹出窗口，需要人工处理（见上一条日志）'; break; }
+      if (res.unverified && ++fails >= 3) { S.stop = true; why = '连续 3 位未确认成功，请看页面是否有提示'; break; }
       if (S.done >= S.target) break;
-      if (/已沟通过/.test(res.msg)) continue;
+      // nothing was sent (already contacted / card gone): move on without the pause
+      if (/已沟通过/.test(res.msg) || (!res.ok && !res.unverified)) continue;
       const wait = 15000 + Math.random() * 15000;
       S.phase = `等待 ${Math.round(wait / 1000)} 秒后继续`; draw();
       for (let t = 0; t < wait && !S.stop && !S.risk; t += 500) await sleep(500);
