@@ -37,7 +37,8 @@ test('同一问题第二次问 → 计为第 2 遍', () => {
   assert.equal(askCount(['面试需要带什么材料吗'], '面试安排', booking, false), 1);
   assert.equal(askCount(['面试到底是几点？'], '面试安排', booking, false), 2);
   assert.equal(askCount(['工资多少', '工资多少啊'], '薪资', [], false), 2);
-  assert.equal(askCount(['随便问问'], '其他', [], true), 2);
+  assert.equal(askCount(['那个事怎么说？'], '其他', [], true), 2);  // the AI says it was asked before
+  assert.equal(askCount(['好的'], '其他', [], true), 1);           // …but only questions count
 });
 
 test('第二次问同一问题（无 AI 时）→ 转本人回复', async () => {
