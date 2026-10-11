@@ -57,7 +57,8 @@ const ICON = {
   sched: '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7.6 19.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3.6 14H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1.1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>',
 };
-const VIEWS = [['home', '总览', '工作台'], ['screen', '采集初筛', '招聘流程'], ['chat', 'AI 约聊'], ['pool', '人才池'], ['sched', '面试排程'], ['settings', '设置', '系统']];
+ICON.kb = '<path d="M5 4h10a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h10M9 8h5"/>';
+const VIEWS = [['home', '总览', '工作台'], ['screen', '采集初筛', '招聘流程'], ['chat', 'AI 约聊'], ['pool', '人才池'], ['sched', '面试排程'], ['kb', '知识库', '系统'], ['settings', '设置']];
 function shell() {
   $('#root').innerHTML = `<div class="app"><aside class="nav" id="nav"></aside><div class="content" id="main"></div></div>`;
   $('#nav').addEventListener('click', e => { const b = e.target.closest('[data-v]'); if (b) go(b.dataset.v); });
@@ -75,7 +76,7 @@ function go(v) { S.view = v; location.hash = v; render(); window.scrollTo(0, 0);
 async function render() {
   renderNav();
   const m = $('#main');
-  try { await ({ home: vHome, screen: vScreen, chat: vChat, pool: vPool, sched: vSched, settings: vSettings })[S.view](m); }
+  try { await ({ home: vHome, screen: vScreen, chat: vChat, pool: vPool, sched: vSched, kb: vKb, settings: vSettings })[S.view](m); }
   catch (e) { if (S.me) m.innerHTML = `<div class="empty-state"><b>加载失败</b>${esc(e.message)}</div>`; }
 }
 
@@ -237,7 +238,8 @@ async function vChat(m) {
       const chk = (ok, n) => `<div><span class="tag ${ok ? 't-ok' : 't-bad'}">${ok ? '通过' : '命中'}</span>${esc(n)}</div>`;
       const dc = r.decision || {};
       const modeTag = { auto: ['t-ok', '全自动'], semi: ['t-warn', '半自动'], human: ['t-bad', '转人工'] }[dc.mode] || ['', ''];
-      $('#draft').innerHTML = `<h4>AI 建议 · 分类：${esc(dr.intent)} <span class="mini-tag">（${esc(dr.model)}）</span></h4>
+      $('#draft').innerHTML = `<h4>AI 建议 · 分类：${esc(dr.intent)}${dr.topic ? ` · 主题：${esc(dr.topic)}` : ''}${dr.asked > 1 ? ` · <span style="color:var(--bad)">第 ${dr.asked} 遍</span>` : ''} <span class="mini-tag">（${esc(dr.model)}）</span></h4>
+        ${(dr.sources || []).length ? `<div class="small muted" style="margin:0 0 6px">参考资料：${dr.sources.map(x => esc(x.title)).filter((v, i, a) => a.indexOf(v) === i).join('、')}</div>` : ''}
         <div style="margin:0 0 8px"><span class="tag ${modeTag[0]}">${modeTag[1]}</span> <span class="small muted">${esc(dc.why || '')}${dc.mode === 'auto' ? `，插件会在约 ${Math.round(dc.delayMs / 1000)} 秒后自动发送` : ''}</span></div>
         <div class="draft ${dr.blocked ? 'blocked' : ''}">${(dr.parts || [dr.reply]).map(esc).join('<br><span class="small muted">— 分两条发 —</span><br>')}</div>
         <div class="checks">${chk(!dr.checks.guard.length, '我方护栏' + (dr.checks.guard.length ? '：' + dr.checks.guard.join('、') : ''))}${chk(!dr.checks.platform.length, '平台拦截规则' + (dr.checks.platform.length ? '：' + dr.checks.platform.join('、') : ''))}</div>
@@ -307,6 +309,139 @@ async function vSched(m) {
   };
 }
 
+/* ---------------- 知识库 ---------------- */
+// document text is extracted in the browser; libraries load on first use
+const LIBS = {
+  mammoth: ['https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js', 'https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js'],
+  pdfjsLib: ['https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js', 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js'],
+  XLSX: ['https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js', 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'],
+};
+async function lib(name) {
+  if (window[name]) return window[name];
+  for (const src of LIBS[name]) {
+    try {
+      await new Promise((ok, no) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = no; document.head.appendChild(s); });
+      if (window[name]) {
+        if (name === 'pdfjsLib') window.pdfjsLib.GlobalWorkerOptions.workerSrc = src.replace('pdf.min.js', 'pdf.worker.min.js');
+        return window[name];
+      }
+    } catch { /* try next mirror */ }
+  }
+  throw new Error('文档解析组件加载失败，请检查网络后重试');
+}
+async function fileText(f) {
+  const ext = (f.name.split('.').pop() || '').toLowerCase();
+  if (['txt', 'md', 'csv', 'json'].includes(ext)) return await f.text();
+  if (ext === 'docx') return (await (await lib('mammoth')).extractRawText({ arrayBuffer: await f.arrayBuffer() })).value;
+  if (ext === 'pdf') {
+    const pdf = await (await lib('pdfjsLib')).getDocument({ data: await f.arrayBuffer() }).promise;
+    const out = [];
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const tc = await (await pdf.getPage(i)).getTextContent();
+      let line = '', lastY = null;
+      for (const it of tc.items) { if (lastY != null && Math.abs(it.transform[5] - lastY) > 2) { out.push(line); line = ''; } line += it.str; lastY = it.transform[5]; }
+      out.push(line, '');
+    }
+    return out.join('\n');
+  }
+  if (['xlsx', 'xls'].includes(ext)) {
+    const X = await lib('XLSX');
+    const wb = X.read(await f.arrayBuffer(), { type: 'array' });
+    return wb.SheetNames.map(n => `【${n}】\n` + X.utils.sheet_to_csv(wb.Sheets[n], { FS: ' | ' }).replace(/( \| )+$/gm, '')).join('\n\n');
+  }
+  if (ext === 'doc') throw new Error('旧版 .doc 请先在 Word 里另存为 .docx');
+  throw new Error(`不支持 .${ext} 文件`);
+}
+
+async function vKb(m) {
+  m.innerHTML = loading;
+  const d = await api('/kb/docs');
+  const L = d.learned;
+  const st = d.stats;
+  m.innerHTML = ph('知识库', `AI 回复候选人时只能使用这里的事实。共 ${st.docs} 份文档（启用 ${st.enabled}），${st.chars.toLocaleString()} 字，切成 ${st.passages} 段；每次回复只取与问题最相关的几段。`,
+    `<button class="btn" id="kb-learn">从历史约聊学习</button><button class="btn" id="kb-new">新建文字文档</button><button class="btn pri" id="kb-up">上传文档</button><input type="file" id="kb-file" multiple accept=".txt,.md,.csv,.docx,.pdf,.xlsx,.xls" hidden>`) + `
+  <div id="kb-edit"></div>
+  <div class="card" id="kb-drop" style="margin-bottom:16px;border:2px dashed var(--line);text-align:center;padding:22px;cursor:pointer"><b>把文档拖到这里，或点击选择文件</b><div class="small muted" style="margin-top:4px">支持 Word（.docx）、PDF、Excel（.xlsx/.xls）、txt、md、csv，可一次选多个。扫描版 PDF（图片）无法读取文字。不想让 AI 对外说的内容不要上传。</div><div id="kb-prog" class="small" style="margin-top:6px"></div></div>
+  <div class="g3" style="grid-template-columns:minmax(0,1.4fr) minmax(0,1fr)">
+    <div class="card"><div class="card-h"><h3>文档</h3></div><div class="tbl-wrap"><table><thead><tr><th>标题</th><th>来源</th><th>字数</th><th>更新</th><th>启用</th><th></th></tr></thead><tbody>
+      ${d.docs.length ? d.docs.map(x => `<tr><td><b>${esc(x.title)}</b></td><td class="small muted">${esc(x.source || '')}</td><td class="num">${x.chars.toLocaleString()}</td><td class="small muted">${esc((x.updated_at || '').slice(5, 16))}</td>
+        <td><input type="checkbox" data-en="${x.id}" ${x.enabled ? 'checked' : ''}></td><td style="white-space:nowrap"><button class="btn sm" data-ed="${x.id}">编辑</button> <button class="btn sm" data-del="${x.id}">删除</button></td></tr>`).join('')
+        : '<tr><td colspan="6"><div class="empty-state">还没有文档。上传文档，或点“从历史约聊学习”自动整理常见问题。</div></td></tr>'}
+    </tbody></table></div></div>
+    <div class="card"><div class="card-h"><h3>检索测试</h3><span class="sub">输入候选人可能问的话，看 AI 会参考哪几段</span></div><div class="card-b">
+      <div class="inline-form"><input class="inp" id="kb-q" placeholder="例如：你们几点下班？有五险一金吗？"><button class="btn" id="kb-qgo">查找</button></div><div id="kb-qres" class="small" style="margin-top:8px"></div></div></div>
+  </div>
+  <div class="card" style="margin-top:16px"><div class="card-h"><h3>从历史约聊学到的常见问题</h3><span class="sub">${L ? `分析了 ${L.conversations} 个会话、${L.questions} 条候选人消息 · ${esc(L.at.slice(5, 16))}` : '还没有分析过'}</span></div><div class="card-b" id="kb-learned">
+    ${L && L.topics.length ? `<p class="small muted" style="margin:0 0 10px">标准答案根据你当时的回复整理，请核对修改后再加入知识库。“待补充”的地方需要你填写。</p>` + L.topics.map((t, i) => `<div class="kv-learn" style="border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:10px">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px"><b>${esc(t.topic)}</b><span class="tag t-info">约 ${t.count} 次</span><span class="small muted">${t.examples.map(esc).join(' / ')}</span></div>
+      <textarea class="inp" data-la="${i}" style="min-height:70px">${esc(t.answer)}</textarea>${t.gaps ? `<div class="small" style="color:var(--warn);margin-top:4px">还缺：${esc(t.gaps)}</div>` : ''}
+      <div class="inline-form" style="margin-top:6px"><button class="btn sm pri" data-ladd="${i}">加入知识库</button></div></div>`).join('') + '<button class="btn" id="kb-ladd-all">全部加入为一份文档</button>'
+      : '<div class="empty-state">先在智联聊天页插件面板点“采集历史约聊”，把过去的会话导入，再点右上角“从历史约聊学习”。AI 会按薪资、待遇福利、作息时间等主题归纳候选人最关心的问题，并根据你当时的回答整理标准答案。</div>'}
+  </div></div>`;
+
+  const upload = async files => {
+    const prog = $('#kb-prog'); let ok = 0;
+    for (const f of files) {
+      prog.textContent = `正在读取 ${f.name}…`;
+      try {
+        const text = (await fileText(f)).replace(/\n{3,}/g, '\n\n').trim();
+        if (!text) throw new Error('没有读到文字（可能是扫描件）');
+        await api('/kb/docs', { body: { title: f.name.replace(/\.[^.]+$/, ''), content: text, source: `文件 .${f.name.split('.').pop()}` } });
+        ok++;
+      } catch (e) { toast(`${f.name}：${e.message}`); await sleep(1500); }
+    }
+    prog.textContent = '';
+    toast(`已加入 ${ok} 份文档`); vKb(m);
+  };
+  $('#kb-up').onclick = $('#kb-drop').onclick = () => $('#kb-file').click();
+  $('#kb-file').onchange = e => upload([...e.target.files]);
+  const drop = $('#kb-drop');
+  drop.ondragover = e => { e.preventDefault(); drop.style.borderColor = 'var(--accent)'; };
+  drop.ondragleave = () => { drop.style.borderColor = ''; };
+  drop.ondrop = e => { e.preventDefault(); drop.style.borderColor = ''; upload([...e.dataTransfer.files]); };
+
+  const editor = (doc = { title: '', content: '' }) => {
+    $('#kb-edit').innerHTML = `<div class="card" style="margin-bottom:16px"><div class="card-h"><h3>${doc.id ? '编辑文档' : '新建文字文档'}</h3></div><div class="card-b">
+      <label class="fi full">标题<input class="inp" id="ke-t" value="${esc(doc.title)}" placeholder="例如：薪资福利说明"></label>
+      <label class="fi full" style="margin-top:8px">内容（可直接粘贴整篇）<textarea class="inp" id="ke-c" style="min-height:380px;line-height:1.7">${esc(doc.content)}</textarea></label>
+      <div class="inline-form"><button class="btn pri" id="ke-save">保存</button><button class="btn" id="ke-cancel">取消</button><span class="small muted" id="ke-n">${doc.content.length.toLocaleString()} 字</span></div></div></div>`;
+    $('#ke-c').oninput = () => { $('#ke-n').textContent = `${$('#ke-c').value.length.toLocaleString()} 字`; };
+    $('#ke-cancel').onclick = () => { $('#kb-edit').innerHTML = ''; };
+    $('#ke-save').onclick = async () => {
+      const body = { title: $('#ke-t').value.trim(), content: $('#ke-c').value };
+      if (!body.content.trim()) return toast('内容不能为空');
+      try { await api(doc.id ? `/kb/docs/${doc.id}` : '/kb/docs', { method: doc.id ? 'PATCH' : 'POST', body }); toast('已保存，AI 下一条回复起生效'); vKb(m); } catch (e) { toast(e.message); }
+    };
+    $('#kb-edit').scrollIntoView({ behavior: 'smooth' });
+  };
+  $('#kb-new').onclick = () => editor();
+  $$('[data-ed]', m).forEach(b => b.onclick = async () => editor(await api(`/kb/docs/${b.dataset.ed}`)));
+  $$('[data-del]', m).forEach(b => b.onclick = async () => { if (!confirm('删除这份文档？')) return; await api(`/kb/docs/${b.dataset.del}`, { method: 'DELETE' }); toast('已删除'); vKb(m); });
+  $$('[data-en]', m).forEach(b => b.onchange = async () => { await api(`/kb/docs/${b.dataset.en}`, { method: 'PATCH', body: { enabled: b.checked } }); toast(b.checked ? '已启用' : '已停用，AI 不再参考这份文档'); });
+
+  const search = async () => {
+    const q = $('#kb-q').value.trim(); if (!q) return;
+    const r = await api('/kb/search', { body: { q } });
+    $('#kb-qres').innerHTML = `<div class="muted" style="margin-bottom:6px">识别主题：${esc(r.topic)}</div>` + (r.passages.length ? r.passages.map(p => `<div style="border-left:3px solid var(--accent);padding:4px 8px;margin-bottom:6px;background:var(--panel-2,#fafafa)"><b>${esc(p.title)}</b> <span class="muted">相关度 ${p.score}</span><div>${esc(p.text.slice(0, 220))}${p.text.length > 220 ? '…' : ''}</div></div>`).join('') : '<div style="color:var(--bad)">没找到相关段落 —— AI 会回复“我核实一下”，并转给你处理。</div>');
+  };
+  $('#kb-qgo').onclick = search;
+  $('#kb-q').onkeydown = e => { if (e.key === 'Enter') search(); };
+
+  $('#kb-learn').onclick = async () => {
+    const b = $('#kb-learn'); b.disabled = true; b.textContent = 'AI 正在分析历史约聊…（约 20–60 秒）';
+    try { const r = await api('/kb/learn', { body: {} }); if (!r.ok) toast(r.error); else toast(`分析完成：归纳出 ${r.topics.length} 个主题`); vKb(m); }
+    catch (e) { toast(e.message); b.disabled = false; b.textContent = '从历史约聊学习'; }
+  };
+  const learnedDoc = idx => idx.map(i => `【${L.topics[i].topic}】\n${$(`[data-la="${i}"]`).value.trim()}`).join('\n\n');
+  $$('[data-ladd]', m).forEach(b => b.onclick = async () => {
+    const i = +b.dataset.ladd;
+    await api('/kb/docs', { body: { title: `常见问题：${L.topics[i].topic}`, content: learnedDoc([i]), source: '历史约聊' } });
+    toast('已加入知识库'); b.disabled = true; b.textContent = '已加入';
+  });
+  const all = $('#kb-ladd-all');
+  if (all) all.onclick = async () => { await api('/kb/docs', { body: { title: '常见问题（来自历史约聊）', content: learnedDoc(L.topics.map((_, i) => i)), source: '历史约聊' } }); toast('已加入知识库'); vKb(m); };
+}
+
 /* ---------------- 设置 ---------------- */
 async function vSettings(m) {
   m.innerHTML = loading;
@@ -354,9 +489,13 @@ async function vSettings(m) {
         <label class="fi" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" id="ar-scan" style="width:auto" ${AR.scanUnread !== false ? 'checked' : ''}>自动打开有未读消息的会话</label>
         <label class="fi full">回复风格（让 AI 像真人一样说话）<textarea id="ar-style" style="min-height:70px">${esc(AR.style)}</textarea></label></div>
       <div class="inline-form"><button class="btn pri" id="ar-save">保存</button></div></div></div>
-    <div class="card" id="kbdoc-card"><div class="card-h"><h3>知识库（整段粘贴）</h3><span class="sub">AI 回复只能用这里和右侧问答里的事实</span></div><div class="card-b">
-      <textarea id="kbdoc" class="inp" style="min-height:260px;font-family:inherit" placeholder="把学校介绍、岗位要求、薪资福利说明、面试流程、常见问题及答案等，直接整段粘贴到这里。&#10;&#10;建议格式（不强制）：&#10;【学校介绍】……&#10;【岗位与要求】……&#10;【薪资福利】……（不想让 AI 说的，就不要写进来）&#10;【面试流程】……&#10;【常见问题】问：……  答：……">${esc(st.kbDoc || '')}</textarea>
-      <div class="inline-form"><button class="btn pri" id="kbdoc-save">保存知识库</button><span class="small muted" id="kbdoc-n">${(st.kbDoc || '').length} / 20000 字</span></div></div></div>
+    <div class="card"><div class="card-h"><h3>AI 对候选人的身份</h3></div><div class="card-b"><div class="grid-form">
+      <label class="fi full">身份（AI 以这个身份第一人称回复）<input id="o-role" value="${esc(ORG.role || '')}" placeholder="招聘约访官，同时负责初试面试"></label>
+      <label class="fi">候选人怎么称呼你（可空）<input id="o-agent" value="${esc(ORG.agentName || '')}" placeholder="例如：王老师"></label>
+      <label class="fi">学校名称<input id="o-name" value="${esc(ORG.name || '')}"></label>
+      <label class="fi">同一问题问到第几遍转你本人<input id="ar-rep" type="number" min="2" value="${esc(AR.repeatLimit ?? 2)}"></label></div>
+      <p class="small muted" style="margin:6px 0 0">候选人明确问“你是不是机器人 / 真人”时，AI 仍会如实说明是 AI 招聘助理并可转人工。知识库文档在左侧“知识库”页面管理。</p>
+      <div class="inline-form"><button class="btn pri" id="o-save">保存</button><button class="btn" data-go="kb">打开知识库</button></div></div></div>
     <div class="card tester"><div class="card-h"><h3>发送前检查</h3><span class="sub">输入一条消息试试</span></div><div class="card-b">
       <textarea id="rt" class="inp" style="min-height:70px">可以关注我们的公众号，工资保证一万，链接 xxedu.cn/r/20261011003</textarea><div class="hits" id="hits"></div></div></div>
   </div>
@@ -384,19 +523,24 @@ async function vSettings(m) {
   $('#ai-test').onclick = async () => { $('#ai-res').textContent = '测试中…'; const r = await api('/tools/llm-test', { body: {} }); $('#ai-res').innerHTML = r.ok ? `<b class="ok-dot">● 正常</b> ${esc(r.provider)}/${esc(r.model)} · ${r.ms} ms · “${esc(r.reply)}”` : `<b class="bad-dot">● 失败</b> ${esc(r.error)}`; };
   $('#r-save').onclick = () => save({ rules: { maxAge: +$('#r-age').value, minEdu: $('#r-edu').value, subjectKeywords: list($('#r-kw').value), schoolPattern: $('#r-sp').value.trim(), trainingPattern: $('#r-tp').value.trim(),
     intentTrack: $('#r-it').checked, intentMaxAge: +$('#r-ia').value || 30, intentMinEdu: $('#r-ie').value, intentKeywords: list($('#r-ik').value) } });
-  $('#ar-save').onclick = () => {
+  // read every field from the page, so one card's save never reverts another card's edits
+  const orgBody = () => ({ ...ORG, place: $('#o-place').value.trim(), persona: $('#o-persona').value.trim(),
+    role: $('#o-role').value.trim(), agentName: $('#o-agent').value.trim(), name: $('#o-name').value.trim() || ORG.name });
+  const arBody = () => {
     const policy = {}; $$('[data-pol]', m).forEach(s => { policy[s.dataset.pol] = s.value; });
     const d0 = Math.max(5, +$('#ar-d0').value || 25), d1 = Math.max(d0, +$('#ar-d1').value || 90);
-    return save({ autoReply: { enabled: $('#ar-on').checked, hours: [$('#ar-h0').value || '08:30', $('#ar-h1').value || '21:00'], delayMin: d0, delayMax: d1,
-      maxPerHour: Math.max(1, +$('#ar-max').value || 40), scanUnread: $('#ar-scan').checked, policy, style: $('#ar-style').value.trim() } }, $('#ar-on').checked ? '已保存：全自动回复已开启' : '已保存');
+    return { enabled: $('#ar-on').checked, hours: [$('#ar-h0').value || '08:30', $('#ar-h1').value || '21:00'], delayMin: d0, delayMax: d1,
+      maxPerHour: Math.max(1, +$('#ar-max').value || 40), scanUnread: $('#ar-scan').checked, policy, style: $('#ar-style').value.trim(),
+      repeatLimit: Math.max(2, +$('#ar-rep').value || 2) };
   };
-  $('#kbdoc').oninput = () => { $('#kbdoc-n').textContent = `${$('#kbdoc').value.length} / 20000 字`; };
-  $('#kbdoc-save').onclick = () => save({ kbDoc: $('#kbdoc').value }, '知识库已保存，AI 下一条回复起生效');
+  $('#ar-save').onclick = () => save({ autoReply: arBody() }, $('#ar-on').checked ? '已保存：全自动回复已开启' : '已保存');
+  $('#o-save').onclick = () => save({ org: orgBody(), autoReply: arBody() });
+  $$('[data-go]', m).forEach(b => b.onclick = () => go(b.dataset.go));
   $('#r-re').onclick = async () => { await $('#r-save').onclick(); const r = await api('/settings/rescreen', { body: {} }); toast(`已按新规则重新初筛 ${r.rescreened} 人`); };
   $('#s-save').onclick = async () => {
     const am = list($('#s-am').value), pm = list($('#s-pm').value);
     if (![...am, ...pm].every(x => /^\d{2}:\d{2}$/.test(x))) return toast('时段格式应为 09:00');
-    await api('/settings', { method: 'PUT', body: { schedule: { am, pm, cap: +$('#s-cap').value || 4, days: +$('#s-days').value || 5, weekdaysOnly: $('#s-wd').checked }, org: { ...ORG, place: $('#o-place').value.trim(), persona: $('#o-persona').value.trim() } } });
+    await api('/settings', { method: 'PUT', body: { schedule: { am, pm, cap: +$('#s-cap').value || 4, days: +$('#s-days').value || 5, weekdaysOnly: $('#s-wd').checked }, org: orgBody() } });
     toast('已保存');
   };
   $$('[data-ivs]', m).forEach(b => b.onclick = async () => { await api('/interviewers/' + b.dataset.ivs, { method: 'PATCH', body: { name: $(`[data-ivn="${b.dataset.ivs}"]`).value } }); toast('已保存'); });

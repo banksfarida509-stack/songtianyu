@@ -24,10 +24,14 @@ p{color:#7A808A;font-size:12px;margin:4px 0}
 <div class="row"><button id="save">保存并测试</button><span class="st" id="st"></span></div>
 
 <h2>知识库</h2>
-<p>AI 回复候选人时，只能使用这里写到的事实（学校介绍、岗位要求、薪资福利说明、面试流程、常见问题等）。这里没写的内容，AI 会说“跟招聘老师确认一下再回你”。</p>
-<p>直接整段粘贴即可，不需要特定格式；和后台“设置 → 知识库（整段粘贴）”是同一份，改哪边都行。不想让 AI 对外说的内容（例如具体薪资数字），就不要写进来。</p>
-<textarea id="kbdoc" placeholder="【学校介绍】……&#10;【岗位与要求】……&#10;【薪资福利】……&#10;【面试流程】……&#10;【常见问题】&#10;问：……&#10;答：……"></textarea>
-<div class="row"><button id="kbsave">保存知识库</button><button class="ghost" id="kbload">重新读取</button><span class="st" id="kbst"></span></div>
+<p>AI 回复候选人时，只能使用知识库里的事实（学校介绍、岗位要求、薪资福利、作息时间、面试流程、常见问题等）。知识库由多份文档组成，每次回复只取与问题最相关的段落。资料里找不到答案时，AI 会说“我核实一下晚点回复你”，并转给你处理。</p>
+<p><b>Word / PDF / Excel 文档</b>请到后台“知识库”页面上传（可一次多个、可拖拽）。这里可以直接新建文字文档，或上传 txt / md 文件。不想让 AI 对外说的内容不要放进来。</p>
+<div class="row"><button class="ghost" id="openkb">打开后台知识库（上传 Word / PDF / Excel）</button><button class="ghost" id="kbload">刷新列表</button><span class="st" id="kbst"></span></div>
+<div id="kblist" style="margin-top:8px"></div>
+<label for="kbtitle">新文档标题</label><input id="kbtitle" placeholder="例如：薪资福利说明">
+<label for="kbdoc">内容（可直接粘贴整篇）</label>
+<textarea id="kbdoc" placeholder="【薪资】……&#10;【五险一金 / 福利】……&#10;【作息时间】……&#10;【常见问题】&#10;问：……&#10;答：……"></textarea>
+<div class="row"><button id="kbsave">保存为新文档</button><button class="ghost" id="kbfilebtn">上传 txt / md 文件</button><input type="file" id="kbfile" accept=".txt,.md,.csv" multiple hidden><span class="st" id="kbst2"></span></div>
 
 <h2>约聊回复方式</h2>
 <p>全自动总开关、每类消息走“全自动 / 半自动 / 转人工”、自动回复时段和回复风格，在后台“设置 → 约聊回复方式”里设置。单个会话也可以在聊天页面板上单独切换。</p>

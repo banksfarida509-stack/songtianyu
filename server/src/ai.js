@@ -3,6 +3,7 @@
 // send/no-send decision are deterministic and checked here.
 import { chat, parseJson, llmConfigured } from './llm.js';
 import { clip, todayCN, addDays } from './util.js';
+import { retrieve, TOPICS, TOPIC_WORDS } from './kb.js';
 
 // ---- platform blocking rules (taken from 智联 chat page im.riskRules, subset) ----
 export const PLATFORM_RISK = [
@@ -81,13 +82,46 @@ export function decideMode(draft, { autoReply, override, nowHM, sentLastHour }) 
   return { mode: 'auto', why: `${src}全自动`, delayMs: Math.round((lo + Math.random() * (hi - lo) + typing) * 1000) };
 }
 
+// ---- topic & repeated questions ----
+export function guessTopic(text) {
+  let best = '其他', n = 0;
+  for (const [t, words] of Object.entries(TOPIC_WORDS)) {
+    const k = words.split(' ').filter(w => w.length > 1 && text.includes(w)).length;
+    if (k > n) { best = t; n = k; }
+  }
+  return best;
+}
+const bigrams = t => { const s = String(t).replace(/[^\p{Script=Han}a-zA-Z0-9]/gu, ''); const o = new Set(); for (let i = 0; i < s.length - 1; i++) o.add(s.slice(i, i + 2)); return o; };
+function similar(a, b) {
+  const A = bigrams(a), B = bigrams(b);
+  if (!A.size || !B.size) return 0;
+  let k = 0; for (const g of A) if (B.has(g)) k++;
+  return k / Math.min(A.size, B.size);
+}
+const ASK_TOPICS = new Set(Object.keys(TOPIC_WORDS));
+/**
+ * How many times this question has been asked, including now.
+ * earlier: [{text, topic}] candidate messages before the current unanswered ones.
+ */
+export function askCount(current, topic, earlier, askedBefore) {
+  // same topic AND worded alike, or nearly the same words (the model's askedBefore covers rephrasings)
+  const hits = earlier.filter(m => current.some(c => {
+    const sim = similar(c, m.text);
+    return sim >= 0.6 || (ASK_TOPICS.has(topic) && m.topic === topic && sim >= 0.3);
+  })).length;
+  // the same question sent twice in a row before we answered also counts
+  const inner = current.slice(1).filter(x => similar(x, current[0]) >= 0.6).length;
+  return Math.max(1 + hits + inner, askedBefore ? 2 : 1);
+}
+
 // ---- chat suggestion ----
 const INTENTS = ['提问', '提供信息', '约面时间', '确认参加', '改期', '拒绝', '议价', '要求真人', '交换联系方式', '其他'];
 
 function fallbackIntent(text) {
   if (/真人|机器人|人工/.test(text)) return '要求真人';
   if (/在哪|地址|地点|位置/.test(text)) return '提问';
-  if (/工资|薪资|待遇|多少钱|保证.*万/.test(text)) return '议价';
+  if (/能不能.*(高|多|加)|再高|太低|少了|保证.*万|能给到|谈.*(工资|薪)/.test(text)) return '议价';
+  if (/工资|薪资|薪酬|待遇|福利|多少钱|五险|作息|几点|上班|下班|周末|双休/.test(text)) return '提问';
   if (/微信|电话|手机号/.test(text)) return '交换联系方式';
   if (/改|换个时间|有事|去不了/.test(text)) return '改期';
   if (/不考虑|不去了|算了|已经找到|入职了/.test(text)) return '拒绝';
@@ -111,21 +145,31 @@ export async function suggestReply(candidate, history, ctx) {
   const slots = candidate.slots || {};
   const tomorrow = addDays(todayCN(), 1);
 
-  const kbDoc = clip(settings.kbDoc || '', 6000);
   const style = settings.autoReply?.style || '';
+  // the candidate's messages since our last reply: answer all of them together
+  const lastOut = history.map(m => m.dir).lastIndexOf('out');
+  const unanswered = history.slice(lastOut + 1).filter(m => m.dir === 'in').map(m => m.text);
+  const query = (unanswered.length ? unanswered : [lastText]).join(' ');
+  const passages = ctx.db ? retrieve(ctx.db, query, { topic: guessTopic(query) }) : [];
+  const docText = passages.map((p, i) => `[D${i + 1}｜${p.title}] ${p.text}`).join('\n');
+  const me = `${org.name || '学校'}的${org.role || '招聘约访官，同时负责初试面试'}${org.agentName ? `（候选人称呼你“${org.agentName}”）` : ''}`;
   let ai = null, model = null, err = null;
   if (llmConfigured() && settings.ai.enabled) {
-    const sys = `你代表${org.name || '学校'}招聘组，在招聘平台上和应聘教师岗位的候选人聊天。规则：
-1. 说话风格：${style}回复 1–2 句，一般不超过 50 字；不要每句都以“好的”开头，不要重复你上一条已经问过的问题；称呼用“你”。
-2. 身份透明：对方问你是不是机器人 / AI 时，如实说是${org.persona}，并说可以转招聘老师；没被问到时不用主动强调。
-3. 只能使用下面知识库里的事实，不得编造任何数字、薪资、福利、承诺；知识库没有的问题，回答“这个我跟招聘老师确认一下再回你”。
-4. 不说“保证、一定”等承诺词，不提年龄、性别、婚育、户籍要求。
-5. 不在消息里写电话、微信号、公众号、链接或 6 位以上数字；交换联系方式由平台按钮完成。
+    const sys = `你是${me}，在招聘平台上用第一人称直接和应聘教师岗位的候选人聊天：代表学校回答问题、了解对方情况、邀约初试。你就是负责这件事的人，不要说“我帮你问问招聘老师”“我是助手”这类话。
+1. 说话风格：${style}回复 1–3 句，一般不超过 60 字；不要每句都以“好的”开头；不要重复你上一条已经问过的问题；称呼用“你”。对方连发了几条时，一次把几条都回应到。
+2. 薪资、待遇福利、作息时间等问题，用下面资料里的事实直接、具体地回答，可以顺带说明面试时会详细介绍。
+3. 只能使用下面“学校资料”和“问答”里的事实，不得编造任何数字、薪资、福利、承诺。资料里找不到答案时，回答“这个我核实一下，晚点回复你”，并把 unknown 设为 true。
+4. 只有对方明确问你是不是真人 / 机器人 / AI 时，才如实说明你是学校的 AI 招聘助理、可以转人工；其他时候不提。
+5. 不说“保证、一定”等承诺词，不提年龄、性别、婚育、户籍要求。不在消息里写电话、微信号、公众号、链接或 6 位以上数字；交换联系方式由平台按钮完成。
 6. 目标：了解教师资格证、最早到岗时间、可面试时间（上午 9:00–11:00 或下午 13:00–15:00），然后约初试。面试地点统一在${org.place}。
-知识库（问答）：${kb.map(k => `[${k.id}] ${k.q}：${k.a}`).join(' ')}
-${kbDoc ? `知识库（资料原文，编号 DOC）：\n${kbDoc}\n` : ''}今天是 ${todayCN()}，明天是 ${tomorrow}。
+7. 判断对方这次的问题之前是否已经问过（看聊天记录里对方的旧消息，同一个意思换了说法也算），填 askedBefore。
+问答：${kb.map(k => `[${k.id}] ${k.q}：${k.a}`).join(' ')}
+学校资料（与本次问题最相关的段落）：
+${docText || '（无相关段落）'}
+今天是 ${todayCN()}，明天是 ${tomorrow}。
 已知信息：${JSON.stringify(slots)}；当前面试安排：${appt ? `${appt.date} ${appt.slot}（${appt.status}）` : '无'}。
-只输出 JSON：{"intent":"${INTENTS.join('|')}","slots":{"cert":"有/没有/在考/null","arrive":"到岗时间或null","day":"YYYY-MM-DD 或 null","half":"am/pm/any/null"},"reply":"给候选人的回复","kb":["引用的知识库编号"]}`;
+只输出 JSON：{"intent":"${INTENTS.join('|')}","topic":"${TOPICS.join('|')}","askedBefore":false,"unknown":false,"slots":{"cert":"有/没有/在考/null","arrive":"到岗时间或null","day":"YYYY-MM-DD 或 null","half":"am/pm/any/null"},"reply":"给候选人的回复","kb":["引用的编号，如 KB-01、D2"]}
+说明：intent 里“议价”只指讨价还价（能不能再高点、能保证一万吗）；单纯问工资多少、有没有五险一金、几点下班属于“提问”。`;
     const msgs = [{ role: 'system', content: sys }];
     for (const m of history.slice(-12)) msgs.push({ role: m.dir === 'in' ? 'user' : 'assistant', content: clip(m.text, 300) });
     // one retry with the providers swapped: covers transient gateway errors and non-JSON output
@@ -164,7 +208,7 @@ ${kbDoc ? `知识库（资料原文，编号 DOC）：\n${kbDoc}\n` : ''}今天�
       action = '约面试';
       stateChange = { attend: '待确认' };
     } else {
-      reply = pick(['这几天面试名额排满了，我问下招聘老师还能不能加个时间，晚点回你。', '最近几天的面试都约满了，我跟招聘老师商量下其他时间再告诉你。']);
+      reply = pick(['这几天面试名额排满了，我看看还能不能加个时间，晚点回你。', '最近几天的面试都约满了，我协调一下其他时间再告诉你。']);
       handoff = true; handoffWhy = '可约时段已满';
     }
   } else if (intent === '确认参加' && appt) {
@@ -181,11 +225,23 @@ ${kbDoc ? `知识库（资料原文，编号 DOC）：\n${kbDoc}\n` : ''}今天�
     action = '换微信';
   } else if (intent === '议价') {
     handoff = true; handoffWhy = '候选人议价';
-    reply = reply || '薪资是按经验定级的，具体这块我让招聘老师直接跟你说。';
+    reply = reply || '薪资是按经验定级的，具体能到多少我核实一下再跟你细说。';
   } else if (intent === '要求真人') {
     // “你是机器人吗” → answer honestly; only an explicit ask for a person hands off
-    if (/真人|人工|转.*老师|找.*(老师|负责人|领导)/.test(lastText)) { handoff = true; handoffWhy = '候选人要求真人'; reply = reply || '好的，我这就请招聘老师来跟你聊。'; }
-    else reply = reply || `是的，我是${org.persona}，你想跟招聘老师直接聊的话我随时帮你转。`;
+    if (/真人|人工|转.*老师|找.*(老师|负责人|领导)/.test(lastText)) { handoff = true; handoffWhy = '候选人要求真人'; reply = reply || '好的，稍等，我安排负责老师直接跟你聊。'; }
+    else reply = reply || `是的，我是${org.persona}，你想跟负责老师直接聊的话我随时帮你转。`;
+  }
+
+  // ---- topic, “don't know”, same question asked again ----
+  const topic = TOPICS.includes(ai?.topic) ? ai.topic : guessTopic(query);
+  if (ai?.unknown === true && !handoff) { handoff = true; handoffWhy = `学校资料里没有答案（${topic}），需要你补充或回复`; }
+  let asked = 1;
+  if (['提问', '议价'].includes(intent)) {
+    asked = askCount(unanswered.length ? unanswered : [lastText], topic, ctx.earlierQuestions || [], ai?.askedBefore === true);
+    const limit = settings.autoReply?.repeatLimit ?? 2;
+    if (asked >= limit) {
+      handoff = true; handoffWhy = `同一问题（${topic}）候选人问了第 ${asked} 遍，需要你本人回复`;
+    }
   }
   if (!reply && /在哪|地址|地点|位置/.test(lastText)) {
     const k = kb.find(x => /地点|地址/.test(x.q));
@@ -194,7 +250,7 @@ ${kbDoc ? `知识库（资料原文，编号 DOC）：\n${kbDoc}\n` : ''}今天�
   if (!reply) reply = pick(['收到。你这边有教师资格证吗？', '好的。方便说下你有没有教师资格证吗？最快什么时候能到岗？']);
 
   // ---- checks ----
-  const kbText = kb.map(k => k.a).join(' ') + ' ' + kbDoc + ' ' + [...sched.am, ...sched.pm].join(' ') + (slot ? ` ${slot.slot} ${slot.date.slice(5)}` : '') + (appt ? ` ${appt.slot} ${appt.date.slice(5)}` : '');
+  const kbText = kb.map(k => k.a).join(' ') + ' ' + docText + ' ' + [...sched.am, ...sched.pm].join(' ') + (slot ? ` ${slot.slot} ${slot.date.slice(5)}` : '') + (appt ? ` ${appt.slot} ${appt.date.slice(5)}` : '');
   const allowed = (kbText.match(/\d+(?:[.:：]\d+)?/g) || []).map(n => n.replace('：', ':'));
   const risk = riskCheck(reply);
   const badNums = numbersOutsideKb(reply, allowed);
@@ -204,7 +260,8 @@ ${kbDoc ? `知识库（资料原文，编号 DOC）：\n${kbDoc}\n` : ''}今天�
 
   reply = clip(reply, 200);
   return {
-    intent, reply, parts: splitHuman(reply), slots: newSlots, action, slot, byAi: !!ai,
+    intent, topic, asked, reply, parts: splitHuman(reply), slots: newSlots, action, slot, byAi: !!ai,
+    sources: passages.map(p => ({ title: p.title, text: clip(p.text, 80) })),
     checks: { guard: guardHits, platform: risk.platform }, blocked,
     handoff, handoffWhy, stateChange, model: model || (err ? `规则回退（${clip(err, 80)}）` : '规则回退（未配置 AI）'),
   };

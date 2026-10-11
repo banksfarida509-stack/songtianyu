@@ -46,10 +46,17 @@ CREATE TABLE IF NOT EXISTS events (
   at TEXT NOT NULL, text TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS kb_docs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL, source TEXT, content TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT, updated_at TEXT
+);
 `;
 
 export const DEFAULT_SETTINGS = {
-  org: { name: 'XX 教育', place: '学校本部', persona: 'XX 教育的 AI 招聘助理' },
+  // role: 对候选人说话时的身份（AI 以这个身份第一人称回复）；agentName: 可选的称呼，如“王老师”
+  org: { name: 'XX 教育', place: '学校本部', persona: 'XX 教育的 AI 招聘助理', role: '招聘约访官，同时负责初试面试', agentName: '' },
   rules: {
     maxAge: 35,
     minEdu: '本科',
@@ -81,6 +88,7 @@ export const DEFAULT_SETTINGS = {
     delayMin: 25, delayMax: 90,   // 收到消息后等待多少秒再回（像真人）
     maxPerHour: 40,               // 每小时最多自动发送条数
     scanUnread: true,             // 自动打开有未读消息的会话
+    repeatLimit: 2,               // 同一问题问到第几遍转本人回复
     policy: {
       提问: 'auto', 提供信息: 'auto', 约面时间: 'auto', 确认参加: 'auto', 改期: 'auto',
       拒绝: 'auto', 议价: 'human', 要求真人: 'human', 交换联系方式: 'semi', 其他: 'semi',
@@ -106,6 +114,16 @@ export function openDb(file) {
   // migrations: per-conversation reply mode override (null = 按分类)
   const cols = db.prepare('PRAGMA table_info(candidates)').all().map(c => c.name);
   if (!cols.includes('chat_mode')) db.exec('ALTER TABLE candidates ADD COLUMN chat_mode TEXT');
+  // topic of each candidate question (薪资 / 作息时间 …) — used to spot a question asked twice
+  const mcols = db.prepare('PRAGMA table_info(messages)').all().map(c => c.name);
+  if (!mcols.includes('topic')) db.exec('ALTER TABLE messages ADD COLUMN topic TEXT');
+  // the single pasted knowledge-base text becomes the first document
+  const pasted = db.prepare("SELECT value FROM settings WHERE key='kbDoc'").get();
+  const pastedText = pasted ? j(pasted.value, '') : '';
+  if (pastedText && !db.prepare('SELECT COUNT(*) n FROM kb_docs').get().n) {
+    db.prepare('INSERT INTO kb_docs(title,source,content,created_at,updated_at) VALUES(?,?,?,?,?)').run('知识库（粘贴）', '粘贴', pastedText, nowCN(), nowCN());
+    db.prepare("UPDATE settings SET value=? WHERE key='kbDoc'").run(s(''));
+  }
   // defaults
   const get = db.prepare('SELECT value FROM settings WHERE key=?');
   const put = db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)');

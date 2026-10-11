@@ -16,20 +16,34 @@ $('save').onclick = async () => {
   if (r.data) loadKb();
 };
 
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 async function loadKb() {
   const r = await call('/ext/kb', null, 'GET');
   if (r.error) return show('kbst', false, `读取失败：${r.error}`);
-  $('kbdoc').value = r.data.kbDoc || '';
-  show('kbst', true, `已读取（${$('kbdoc').value.length} 字）`);
+  const { docs, stats } = r.data;
+  show('kbst', true, `共 ${stats.docs} 份文档（启用 ${stats.enabled}），${stats.chars.toLocaleString()} 字`);
+  $('kblist').innerHTML = docs.length
+    ? `<table style="width:100%;border-collapse:collapse;font-size:12.5px">${docs.map(d => `<tr style="border-bottom:1px solid #EEF0F3"><td style="padding:4px 0">${d.enabled ? '' : '<span style="color:#B25E09">[停用] </span>'}${esc(d.title)}</td><td style="color:#7A808A">${esc(d.source || '')}</td><td style="text-align:right;color:#7A808A">${d.chars.toLocaleString()} 字</td></tr>`).join('')}</table>`
+    : '<p>还没有文档。</p>';
+}
+async function addDoc(title, content, el) {
+  const r = await call('/ext/kb/docs', { title, content });
+  show(el, !!r.data, r.data ? `已保存「${title}」，AI 下一条回复起生效` : `保存失败：${r.error}`);
+  if (r.data) loadKb();
+  return !!r.data;
 }
 $('kbload').onclick = loadKb;
-$('kbdoc').oninput = () => { $('kbst').textContent = `${$('kbdoc').value.length} / 20000 字（未保存）`; $('kbst').style.color = '#7A808A'; };
 $('kbsave').onclick = async () => {
-  $('kbst').textContent = '保存中…';
-  const r = await call('/ext/kb', { kbDoc: $('kbdoc').value }, 'PUT');
-  show('kbst', !!r.data, r.data ? `已保存（${r.data.length} 字），AI 下一条回复起生效` : `保存失败：${r.error}`);
+  const title = $('kbtitle').value.trim() || '未命名文档', content = $('kbdoc').value;
+  if (!content.trim()) return show('kbst2', false, '内容不能为空');
+  $('kbst2').textContent = '保存中…';
+  if (await addDoc(title, content, 'kbst2')) { $('kbtitle').value = ''; $('kbdoc').value = ''; }
 };
-$('openadmin').onclick = () => {
-  const s = $('server').value.trim().replace(/\/+$/, '');
-  if (s) chrome.tabs.create({ url: `${s}/#settings` });
+$('kbfilebtn').onclick = () => $('kbfile').click();
+$('kbfile').onchange = async e => {
+  for (const f of e.target.files) await addDoc(f.name.replace(/\.[^.]+$/, ''), await f.text(), 'kbst2');
+  e.target.value = '';
 };
+const admin = hash => { const s = $('server').value.trim().replace(/\/+$/, ''); if (s) chrome.tabs.create({ url: `${s}/#${hash}` }); };
+$('openadmin').onclick = () => admin('settings');
+$('openkb').onclick = () => admin('kb');

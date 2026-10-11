@@ -155,6 +155,37 @@
     openSession(sessId(cand[0]), reqId);
   }
 
+  // read past conversations one by one (opens each; never types or sends).
+  // Sessions with unread messages are skipped so they are not marked as read.
+  const msgsOf = (st, sid) => ((st.timelineMap?.[sid]?.timeline) || []).filter(m => m.type === 'text' && m.text)
+    .slice(-200).map(m => ({ id: m.idServer || m.idClient, dir: m.flow === 'in' ? 'in' : 'out', text: m.text, at: m.time ? new Date(m.time).toISOString() : '' }));
+  let collecting = false;
+  async function collectHistory(reqId, max) {
+    const st = rootVm()?.$store?.state?.im;
+    if (!st) return post('historyResult', { reqId, ok: false, msg: '未读到会话列表' });
+    if (collecting) return post('historyResult', { reqId, ok: false, msg: '正在采集中' });
+    collecting = true;
+    const list = (st.sessions || []).filter(s => unreadOf(s) === 0).slice(0, max || 30);
+    const out = []; let skipped = (st.sessions || []).length - list.length;
+    for (let i = 0; i < list.length && collecting; i++) {
+      const s = list[i], id = sessId(s);
+      let msgs = msgsOf(st, id);
+      if (!msgs.length || st.activeSessionId !== id) {
+        const el = sessionEl(s);
+        if (!el) { skipped++; continue; }
+        realClick(el);
+        for (let k = 0; k < 16; k++) { await wait(300); if (st.activeSessionId === id && msgsOf(st, id).length) break; }
+        await wait(500 + Math.random() * 800);
+        msgs = msgsOf(st, id);
+      }
+      const cur = st.currentSession && sessId(st.currentSession) === id ? st.currentSession : s;
+      if (msgs.length) out.push({ sessionId: id, uid: cur.resumeNumber || s.resumeNumber || '', name: cur.name || s.name || '', job: cur.jobTitle || s.jobTitle || '', messages: msgs });
+      post('historyProgress', { reqId, done: i + 1, total: list.length, name: s.name || '' });
+    }
+    collecting = false;
+    post('historyResult', { reqId, ok: true, sessions: out, skipped });
+  }
+
   function clickNative(name) {
     const b = [...document.querySelectorAll('button, div, span')].find(e => e.offsetParent && e.children.length <= 2 && (e.innerText || '').trim() === name);
     if (!b) return post('actionResult', { ok: false, msg: `没找到“${name}”按钮` });
@@ -248,6 +279,8 @@
     if (d.type === 'send') sendText(String(d.text || ''), d.reqId);
     if (d.type === 'open') openSession(d.id, d.reqId);
     if (d.type === 'nextUnread') nextUnread(d.reqId, d.skip);
+    if (d.type === 'history') collectHistory(d.reqId, d.max);
+    if (d.type === 'historyStop') collecting = false;
     if (d.type === 'more') {
       // load the next batch of recommend cards (infinite scroll)
       clickStay();
@@ -265,7 +298,7 @@
   function tick() {
     try {
       if (location.pathname.includes('/app/recommend')) readRecommend();
-      if (location.pathname.includes('/app/im')) readChat();
+      if (location.pathname.includes('/app/im') && !collecting) readChat();
       if (++n % 4 === 0 && riskSignal()) post('risk', {});
     } catch (e) { post('error', { msg: String(e && e.message || e) }); }
   }

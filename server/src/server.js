@@ -7,7 +7,8 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { openDb, getSetting, setSetting, addEvent } from './db.js';
 import { normalizeZhaopin, screen } from './rules.js';
-import { polishReasons, suggestReply, riskCheck, decideMode } from './ai.js';
+import { polishReasons, suggestReply, riskCheck, decideMode, guessTopic } from './ai.js';
+import { retrieve, kbStats, learnFromChats } from './kb.js';
 import { llmConfigured, chat } from './llm.js';
 import { findSlot, book, autoSchedule, interviewerStatus, workDays, activeAppt, halfOf } from './schedule.js';
 import { todayCN, nowCN, j, s, clip, weekday, WEEK, randomToken } from './util.js';
@@ -132,12 +133,34 @@ route('POST', '/api/ext/ping', 'ext', async (req, res) => {
   send(res, 200, { ok: true, today: todayCN(), auto: { enabled: !!ar.enabled, hours: ar.hours, scanUnread: ar.scanUnread !== false, sentLastHour: autoSentLastHour(), maxPerHour: ar.maxPerHour } });
 });
 
-// knowledge base, editable from the extension options page as well as the admin
-route('GET', '/api/ext/kb', 'ext', (req, res) => send(res, 200, { kbDoc: getSetting(db, 'kbDoc') || '', kb: getSetting(db, 'kb') }));
-route('PUT', '/api/ext/kb', 'ext', async (req, res) => {
+// knowledge-base documents: the extension options page can list them and add text documents
+const KB_MAX = 500000;
+const docList = () => db.prepare('SELECT id,title,source,enabled,length(content) chars,updated_at FROM kb_docs ORDER BY id DESC').all();
+function addDoc(b, source) {
+  const title = clip(String(b.title || '').trim(), 80) || '未命名文档';
+  const content = clip(String(b.content || ''), KB_MAX);
+  if (!content.trim()) throw new Error('文档内容为空');
+  const now = nowCN();
+  return Number(db.prepare('INSERT INTO kb_docs(title,source,content,created_at,updated_at) VALUES(?,?,?,?,?)').run(title, clip(b.source || source, 40), content, now, now).lastInsertRowid);
+}
+route('GET', '/api/ext/kb', 'ext', (req, res) => send(res, 200, { docs: docList(), stats: kbStats(db) }));
+route('POST', '/api/ext/kb/docs', 'ext', async (req, res) => {
   const b = await body(req);
-  if (typeof b.kbDoc === 'string') setSetting(db, 'kbDoc', clip(b.kbDoc, 20000));
-  send(res, 200, { ok: true, length: (getSetting(db, 'kbDoc') || '').length });
+  try { send(res, 200, { ok: true, id: addDoc(b, '插件'), stats: kbStats(db) }); } catch (e) { fail(res, 400, e.message); }
+});
+
+// past conversations collected by the extension (stored only; no replies generated)
+route('POST', '/api/ext/chat/history', 'ext', async (req, res) => {
+  const b = await body(req);
+  const platform = b.platform === 'boss' ? 'boss' : 'zhaopin';
+  let conv = 0, msgs = 0;
+  for (const sess of (b.sessions || []).slice(0, 50)) {
+    if (!sess || !(sess.messages || []).length) continue;
+    const c = chatCandidate(platform, sess);
+    msgs += storeMessages(c, sess.messages.slice(-200)); conv++;
+    if (c.attend === '未联系') db.prepare("UPDATE candidates SET attend='沟通中' WHERE id=?").run(c.id);
+  }
+  send(res, 200, { ok: true, conversations: conv, newMessages: msgs });
 });
 
 // per-conversation reply mode: 'auto' | 'semi' | 'human' | null (按分类)
@@ -189,27 +212,51 @@ route('POST', '/api/ext/reasons', 'ext', async (req, res) => {
 });
 
 // a chat thread snapshot from the platform page; returns an AI draft
+function chatCandidate(platform, b) {
+  let c = b.uid ? db.prepare('SELECT * FROM candidates WHERE platform=? AND uid=?').get(platform, String(b.uid)) : null;
+  if (!c) {
+    const uid = String(b.uid || 'sess-' + clip(b.sessionId, 40));
+    c = db.prepare('SELECT * FROM candidates WHERE platform=? AND uid=?').get(platform, uid);
+    if (c) return c;
+    const now = nowCN();
+    const r = db.prepare(`INSERT INTO candidates(platform,uid,name,job,attend,source,created_at,updated_at,verdict,score,reason,reason_by)
+      VALUES(?,?,?,?,'沟通中',?,?,?,'待确认',50,'仅有聊天记录，未读取简历','rule')`).run(platform, uid, clip(b.name, 20), clip(b.job, 40), platform === 'zhaopin' ? '智联 聊天' : 'BOSS 聊天', now, now);
+    c = getCand(Number(r.lastInsertRowid));
+  }
+  return c;
+}
+function storeMessages(c, list) {
+  const ins = db.prepare('INSERT OR IGNORE INTO messages(candidate_id,dir,by,text,platform_msg_id,at) VALUES(?,?,?,?,?,?)');
+  let n = 0;
+  for (const m of list) {
+    if (!m || !m.text) continue;
+    n += ins.run(c.id, m.dir === 'in' ? 'in' : 'out', m.dir === 'in' ? 'candidate' : 'staff', clip(m.text, 1000), String(m.id || crypto.createHash('md5').update(m.dir + m.text + (m.at || '')).digest('hex')), clip(m.at, 30) || nowCN()).changes;
+  }
+  return n;
+}
+// history for the AI: messages + candidate questions asked before the current unanswered ones
+function chatContext(cid) {
+  const rows = db.prepare('SELECT id,dir,text,topic FROM messages WHERE candidate_id=? ORDER BY id').all(cid);
+  const lastOut = rows.map(r => r.dir).lastIndexOf('out');
+  return {
+    history: rows.map(r => ({ dir: r.dir, text: r.text })),
+    earlierQuestions: rows.slice(0, Math.max(0, lastOut)).filter(r => r.dir === 'in').map(r => ({ text: r.text, topic: r.topic })),
+    unansweredIds: rows.slice(lastOut + 1).filter(r => r.dir === 'in').map(r => r.id),
+  };
+}
+const tagTopic = (ids, topic) => { const up = db.prepare('UPDATE messages SET topic=? WHERE id=?'); for (const id of ids) up.run(topic, id); };
+
 route('POST', '/api/ext/chat/suggest', 'ext', async (req, res) => {
   const b = await body(req);
   const platform = b.platform === 'boss' ? 'boss' : 'zhaopin';
-  let c = b.uid ? db.prepare('SELECT * FROM candidates WHERE platform=? AND uid=?').get(platform, String(b.uid)) : null;
-  if (!c) {
-    const now = nowCN();
-    const r = db.prepare(`INSERT INTO candidates(platform,uid,name,job,attend,source,created_at,updated_at,verdict,score,reason,reason_by)
-      VALUES(?,?,?,?,'沟通中',?,?,?,'待确认',50,'仅有聊天记录，未读取简历','rule')`).run(platform, String(b.uid || 'sess-' + clip(b.sessionId, 40)), clip(b.name, 20), clip(b.job, 40), platform === 'zhaopin' ? '智联 聊天' : 'BOSS 聊天', now, now);
-    c = getCand(Number(r.lastInsertRowid));
-  }
-  // store messages
-  const ins = db.prepare('INSERT OR IGNORE INTO messages(candidate_id,dir,by,text,platform_msg_id,at) VALUES(?,?,?,?,?,?)');
-  for (const m of (b.messages || []).slice(-40)) {
-    if (!m.text) continue;
-    ins.run(c.id, m.dir === 'in' ? 'in' : 'out', m.dir === 'in' ? 'candidate' : 'staff', clip(m.text, 1000), String(m.id || crypto.createHash('md5').update(m.dir + m.text + (m.at || '')).digest('hex')), clip(m.at, 30) || nowCN());
-  }
+  const c = chatCandidate(platform, b);
+  storeMessages(c, (b.messages || []).slice(-40));
   if (c.attend === '未联系') db.prepare("UPDATE candidates SET attend='沟通中' WHERE id=?").run(c.id);
-  const history = db.prepare('SELECT dir,text FROM messages WHERE candidate_id=? ORDER BY id').all(c.id);
+  const cx = chatContext(c.id);
   const st = settingsAll();
   const appt = activeAppt(db, c.id);
-  const d = await suggestReply({ ...c, slots: j(c.slots_json, {}) }, history, { settings: st, appt, db });
+  const d = await suggestReply({ ...c, slots: j(c.slots_json, {}) }, cx.history, { settings: st, appt, db, earlierQuestions: cx.earlierQuestions });
+  if (d.topic) tagTopic(cx.unansweredIds, d.topic);
   // persist extracted slots (no state change until the staff sends)
   const slots = { ...j(c.slots_json, {}), ...d.slots };
   db.prepare('UPDATE candidates SET slots_json=?, updated_at=? WHERE id=?').run(s(slots), nowCN(), c.id);
@@ -318,8 +365,9 @@ route('POST', '/api/candidates/:id/chat-test', 'admin', async (req, res, p) => {
   if (!c) return fail(res, 404, '候选人不存在');
   if (b.text) db.prepare('INSERT INTO messages(candidate_id,dir,by,text,at) VALUES(?,?,?,?,?)').run(c.id, 'in', 'candidate', clip(b.text, 500), nowCN());
   if (c.attend === '未联系') db.prepare("UPDATE candidates SET attend='沟通中' WHERE id=?").run(c.id);
-  const history = db.prepare('SELECT dir,text FROM messages WHERE candidate_id=? ORDER BY id').all(c.id);
-  const d = await suggestReply({ ...c, slots: j(c.slots_json, {}) }, history, { settings: settingsAll(), appt: activeAppt(db, c.id), db });
+  const cx = chatContext(c.id);
+  const d = await suggestReply({ ...c, slots: j(c.slots_json, {}) }, cx.history, { settings: settingsAll(), appt: activeAppt(db, c.id), db, earlierQuestions: cx.earlierQuestions });
+  if (d.topic) tagTopic(cx.unansweredIds, d.topic);
   db.prepare('UPDATE candidates SET slots_json=? WHERE id=?').run(s({ ...j(c.slots_json, {}), ...d.slots }), c.id);
   if (b.apply && !d.blocked) {
     db.prepare('INSERT INTO messages(candidate_id,dir,by,text,at) VALUES(?,?,?,?,?)').run(c.id, 'out', 'ai', d.reply, nowCN());
@@ -412,6 +460,40 @@ route('PUT', '/api/settings', 'admin', async (req, res) => {
   if (typeof b.kbDoc === 'string') setSetting(db, 'kbDoc', clip(b.kbDoc, 20000));
   send(res, 200, settingsAll());
 });
+// knowledge base (documents)
+route('GET', '/api/kb/docs', 'admin', (req, res) => send(res, 200, { docs: docList(), stats: kbStats(db), learned: getSetting(db, 'learned') }));
+route('GET', '/api/kb/docs/:id', 'admin', (req, res, p) => {
+  const d = db.prepare('SELECT * FROM kb_docs WHERE id=?').get(Number(p.id));
+  d ? send(res, 200, d) : fail(res, 404, '文档不存在');
+});
+route('POST', '/api/kb/docs', 'admin', async (req, res) => {
+  const b = await body(req);
+  try { send(res, 200, { ok: true, id: addDoc(b, '后台'), stats: kbStats(db) }); } catch (e) { fail(res, 400, e.message); }
+});
+route('PATCH', '/api/kb/docs/:id', 'admin', async (req, res, p) => {
+  const b = await body(req), id = Number(p.id);
+  if (!db.prepare('SELECT 1 FROM kb_docs WHERE id=?').get(id)) return fail(res, 404, '文档不存在');
+  if (typeof b.title === 'string' && b.title.trim()) db.prepare('UPDATE kb_docs SET title=? WHERE id=?').run(clip(b.title.trim(), 80), id);
+  if (typeof b.content === 'string' && b.content.trim()) db.prepare('UPDATE kb_docs SET content=? WHERE id=?').run(clip(b.content, KB_MAX), id);
+  if (typeof b.enabled === 'boolean') db.prepare('UPDATE kb_docs SET enabled=? WHERE id=?').run(b.enabled ? 1 : 0, id);
+  db.prepare('UPDATE kb_docs SET updated_at=? WHERE id=?').run(nowCN(), id);
+  send(res, 200, { ok: true, stats: kbStats(db) });
+});
+route('DELETE', '/api/kb/docs/:id', 'admin', (req, res, p) => {
+  db.prepare('DELETE FROM kb_docs WHERE id=?').run(Number(p.id));
+  send(res, 200, { ok: true, stats: kbStats(db) });
+});
+route('POST', '/api/kb/search', 'admin', async (req, res) => {
+  const b = await body(req);
+  const q = clip(String(b.q || ''), 300);
+  send(res, 200, { topic: guessTopic(q), passages: retrieve(db, q, { topic: guessTopic(q) }) });
+});
+route('POST', '/api/kb/learn', 'admin', async (req, res) => {
+  const r = await learnFromChats(db, getSetting(db, 'ai'));
+  if (r.ok) setSetting(db, 'learned', r);
+  send(res, 200, r);
+});
+
 route('POST', '/api/settings/rotate-token', 'admin', (req, res) => { const t = randomToken(18); setSetting(db, 'ext_token', t); send(res, 200, { extToken: t }); });
 route('POST', '/api/settings/rescreen', 'admin', (req, res) => {
   const rules = getSetting(db, 'rules'); let n = 0;
@@ -469,7 +551,7 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith('/api/ext/')) {
     res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-HR-Token');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
     if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   }
   if (!p.startsWith('/api/')) return serveStatic(res, p === '/' ? 'index.html' : p.slice(1));

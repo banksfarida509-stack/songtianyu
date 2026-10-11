@@ -24,6 +24,7 @@
     results: {}, job: '', err: '', risk: false, greeting: false, stop: false, confirmGreet: false, target: 10, done: 0, phase: '', log: [],
     chat: null, draft: null, decision: null, chatMode: null, candidateId: null, busy: false, collapsed: false, lastSuggestSig: '',
     auto: null, autoPaused: false, pending: null, sending: false, todo: [], handledAt: 0, userAt: 0, scanSkip: [],
+    collecting: null, confirmCollect: false, quietNext: 0,
   };
   const log = m => { S.log.unshift(`${new Date().toTimeString().slice(0, 8)} ${m}`); S.log = S.log.slice(0, 40); draw(); };
   const MODE_TXT = { auto: '全自动', semi: '半自动', human: '转人工' };
@@ -86,7 +87,8 @@
       else if (!d) b += `<p class="hra-muted">${c.messages.length && c.messages[c.messages.length - 1].dir === 'in' ? '' : '等候选人回复。'}</p><button class="hra-btn" data-a="suggest">生成回复建议</button>`;
       else {
         const ck = (ok, t) => `<div class="hra-ck ${ok ? 'ok' : 'bad'}">${ok ? '通过' : '命中'} · ${esc(t)}</div>`;
-        b += `<div class="hra-muted">分类：<b>${esc(d.intent)}</b> → <span class="hra-mode ${dc?.mode || ''}">${esc(MODE_TXT[dc?.mode] || '半自动')}</span> ${esc(dc?.why || '')}</div>`;
+        b += `<div class="hra-muted">分类：<b>${esc(d.intent)}</b>${d.topic && d.topic !== '其他' ? ` · ${esc(d.topic)}` : ''}${d.asked > 1 ? ` · <b style="color:#C4313B">第 ${d.asked} 遍</b>` : ''} → <span class="hra-mode ${dc?.mode || ''}">${esc(MODE_TXT[dc?.mode] || '半自动')}</span> ${esc(dc?.why || '')}</div>`;
+        if ((d.sources || []).length) b += `<div class="hra-muted">参考：${[...new Set(d.sources.map(x => x.title))].map(esc).join('、')}</div>`;
         b += `<div class="hra-draft ${d.blocked ? 'bad' : ''}">${(d.parts || [d.reply]).map(esc).join('<hr>')}</div>`;
         b += ck(!d.checks.guard.length, '我方护栏' + (d.checks.guard.length ? '：' + d.checks.guard.join('、') : '')) + ck(!d.checks.platform.length, '平台拦截规则' + (d.checks.platform.length ? '：' + d.checks.platform.join('、') : ''));
         if (d.handoff) b += `<div class="hra-err">转人工：${esc(d.handoffWhy || '')}</div>`;
@@ -100,6 +102,12 @@
         }
       }
     }
+    // collect past conversations for the knowledge base (read only)
+    if (S.collecting) b += `<div class="hra-cd">正在采集历史约聊：${S.collecting.done}/${S.collecting.total} ${esc(S.collecting.name || '')}</div><button class="hra-btn" data-a="collect-stop">停止采集</button>`;
+    else if (S.confirmCollect) b += `<p class="hra-muted">将依次打开最近的会话，读取聊天记录交给后台，用来整理候选人常问的问题（薪资、待遇、作息等）。只读取，不发送任何消息；有未读消息的会话会跳过，以免被标成已读。</p>
+      <div class="hra-row"><label class="hra-muted">最近 <input id="hra-hn" type="number" min="5" max="50" value="30" style="width:56px"> 个会话</label></div>
+      <div class="hra-row"><button class="hra-btn pri" data-a="collect-go">开始采集</button><button class="hra-btn" data-a="collect-cancel">取消</button></div>`;
+    else b += `<button class="hra-btn" data-a="collect">采集历史约聊（用于知识库）</button>`;
     if (S.todo.length) {
       b += `<div class="hra-sub">待你处理（${S.todo.length}）</div><div class="hra-rank">${S.todo.map(t => `<div class="hra-ri" data-open="${esc(t.sessionId)}"><b>${esc(MODE_TXT[t.mode] || '')}</b><span>${esc(t.name)}<i>${esc(t.why)}</i></span><em>${esc(t.at)}</em></div>`).join('')}</div>`;
     }
@@ -130,6 +138,10 @@
     if (a === 'stop') { S.stop = true; return; }
     if (a === 'suggest') return suggest(true);
     if (a === 'kb') { chrome.runtime.sendMessage({ type: 'openOptions' }); return; }
+    if (a === 'collect') { S.confirmCollect = true; return draw(); }
+    if (a === 'collect-cancel') { S.confirmCollect = false; return draw(); }
+    if (a === 'collect-stop') { toMain('historyStop'); return; }
+    if (a === 'collect-go') { const n = parseInt(panel.querySelector('#hra-hn')?.value, 10) || 30; S.confirmCollect = false; return collectHistory(Math.max(5, Math.min(50, n))); }
     if (a === 'pause') { S.autoPaused = !S.autoPaused; if (S.autoPaused) cancelPending('已暂停全自动'); log(S.autoPaused ? '本页已暂停全自动回复' : '本页已恢复全自动回复'); return; }
     if (a.startsWith('mode:') && S.candidateId) {
       const mode = a.slice(5) || null;
@@ -275,10 +287,26 @@
     draw();
   }
 
+  async function collectHistory(max) {
+    cancelPending();
+    S.collecting = { done: 0, total: max, name: '' }; draw();
+    const r = await callMain('history', { max }, 'historyResult', max * 15000);
+    S.collecting = null; S.quietNext = Date.now(); // don't answer whatever conversation the collection ended on
+    if (!r.ok) { log(`采集失败：${r.msg}`); return draw(); }
+    let conv = 0, msgs = 0;
+    for (let i = 0; i < r.sessions.length; i += 10) {
+      const up = await api('/ext/chat/history', { platform: 'zhaopin', sessions: r.sessions.slice(i, i + 10) });
+      if (up.error) { log(`上传失败：${up.error}`); break; }
+      conv += up.data.conversations; msgs += up.data.newMessages;
+    }
+    log(`采集完成：${conv} 个会话，新增 ${msgs} 条消息${r.skipped ? `，跳过 ${r.skipped} 个（有未读或未找到）` : ''}。到后台“知识库 → 从历史约聊学习”生成常见问题`);
+    draw();
+  }
+
   // full-auto patrol: open the next conversation with unread messages when idle
   async function patrol() {
     const A = S.auto;
-    if (!isIm() || !A?.enabled || A.scanUnread === false || S.autoPaused || S.risk || S.busy || S.pending || S.sending) return;
+    if (!isIm() || !A?.enabled || A.scanUnread === false || S.autoPaused || S.risk || S.busy || S.pending || S.sending || S.collecting) return;
     if (Date.now() - S.userAt < 45000) return;                 // the recruiter is using the page
     const waitingOnYou = S.draft && !S.draft.sentAuto && S.decision?.mode !== 'auto';
     if (Date.now() - S.handledAt < (waitingOnYou ? 180000 : 8000)) return; // give a semi draft 3 min before moving on
@@ -293,6 +321,12 @@
     const d = e.data;
     if (!d || d.__hra !== 'main' || e.source !== window) return;
     if (d.type === 'recommend') onCards(d.data.cards, d.data.job);
+    if (d.type === 'historyProgress' && S.collecting) { Object.assign(S.collecting, { done: d.data.done, total: d.data.total, name: d.data.name }); draw(); }
+    if (d.type === 'chat' && S.collecting) return;
+    if (d.type === 'chat' && S.quietNext && Date.now() - S.quietNext < 6000) {
+      S.quietNext = false; S.chat = d.data; S.draft = null; S.decision = null; S.candidateId = null;
+      S.lastSuggestSig = chatSig(d.data); S.handledAt = Date.now(); return draw();
+    }
     if (d.type === 'chat') {
       const changed = !S.chat || S.chat.sessionId !== d.data.sessionId;
       if (S.pending && chatSig(d.data) !== S.pending.sig) {
