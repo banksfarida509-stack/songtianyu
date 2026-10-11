@@ -270,6 +270,7 @@
     const sess = sessionsOf(st).find(s => sessId(s) === id);
     if (!sess) return post('openResult', { reqId, ok: false, msg: '没找到这个会话' });
     const r = await activate(st, sess);
+    markVisited(st, sess);
     if (r.ok) return post('openResult', { reqId, ok: true, how: r.how, msg: `打开会话：${nameOf(sess)}（${r.how}）` });
     post('openResult', { reqId, ok: false, failed: true, id, msg: `打不开会话「${nameOf(sess)}」，已跳过（试过：${r.tried.join('、') || '没找到会话行'}）` });
   }
@@ -311,19 +312,42 @@
     }
     post('openResult', { reqId, ok: false, failed: true, id: `row:${name}`, msg: `打不开会话「${name}」，已跳过（试过：点未读行）` });
   }
+  // Sessions we already opened. The platform does not always clear the unread
+  // mark, so a visited session is only opened again when something about its
+  // last message changes (new message → new time / text / id).
+  const visited = new Map();
+  const sessLastSig = s => {
+    const parts = [];
+    for (const [k, v] of Object.entries(s || {})) {
+      if (!/last|time|msg|message|update/i.test(k) || /unread/i.test(k)) continue;
+      if (typeof v === 'string' || typeof v === 'number') parts.push(`${k}=${v}`);
+      else if (v && typeof v === 'object') for (const [k2, v2] of Object.entries(v)) if (typeof v2 === 'string' || typeof v2 === 'number') parts.push(`${k}.${k2}=${String(v2).slice(0, 40)}`);
+    }
+    return parts.sort().join('|');
+  };
+  const markVisited = (st, s) => { if (s) visited.set(String(sessId(s)), { sig: sessLastSig(s), unread: unreadOf(s), at: Date.now() }); };
+  const seenAlready = s => {
+    const v = visited.get(String(sessId(s)));
+    if (!v) return false;
+    if (Date.now() - v.at < 60000) return true;               // just looked at it
+    return v.sig === sessLastSig(s) && unreadOf(s) <= v.unread;    // nothing new since then
+  };
   // next conversation with unread messages
   function nextUnread(reqId, skip) {
     const st = rootVm()?.$store?.state?.im;
     if (!st) return post('openResult', { reqId, ok: false, msg: '未读到聊天数据（页面还在加载？）' });
     if ((chatInput()?.value || '').trim()) return post('openResult', { reqId, ok: false, msg: '输入框有内容，暂不切换会话' });
-    const usable = s => !isActive(st, s) && !(skip || []).includes(sessId(s));
+    // the conversation open right now counts as visited
+    const curS = sessionsOf(st).find(s => isActive(st, s)); if (curS) markVisited(st, curS);
+    const usable = s => !isActive(st, s) && !(skip || []).includes(sessId(s)) && !seenAlready(s);
     let cand = sessionsOf(st).filter(s => usable(s) && unreadOf(s) > 0);
     if (!cand.length) cand = badgeSessions(st).filter(usable);
     if (cand.length) return openSession(sessId(cand[0]), reqId);
     // session list not readable: open the first red-badge row that is not the current one
     const cur = nameOf(st.currentSession || {});
-    const row = badgeRows().find(r => r.name && r.name !== cur && !(skip || []).includes(`row:${r.name}`));
-    if (row) return openRow(row, reqId);
+    const fresh = r => { const v = visited.get(`row:${r.name}`); return !v || Date.now() - v.at > 180000; };
+    const row = badgeRows().find(r => r.name && r.name !== cur && !(skip || []).includes(`row:${r.name}`) && fresh(r));
+    if (row) { visited.set(`row:${row.name}`, { at: Date.now() }); return openRow(row, reqId); }
     post('openResult', { reqId, ok: false, none: true, msg: '没有未读会话', sessions: sessionsOf(st).length, badges: badgeRows().length });
   }
 

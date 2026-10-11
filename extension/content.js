@@ -285,7 +285,14 @@
     if (!c) return;
     const last = c.messages[c.messages.length - 1];
     const sig = chatSig(c);
-    if (!force && (sig === S.lastSuggestSig || !last || last.dir !== 'in')) return draw();
+    if (!force && (sig === S.lastSuggestSig || !last || last.dir !== 'in')) {
+      // say once why this conversation is left alone
+      if (sig !== S.lastSuggestSig && sig !== S.noReplySig) {
+        S.noReplySig = sig;
+        log(`${c.name || '当前会话'}：${!last ? '读不到聊天内容，跳过' : '最后一条是我方消息，等对方回复'}`);
+      }
+      return draw();
+    }
     S.lastSuggestSig = sig; S.busy = true; S.draft = null; S.decision = null; S.pending = null; draw();
     const r = await api('/ext/chat/suggest', { platform: 'zhaopin', sessionId: c.sessionId, uid: c.uid, name: c.name, job: c.job, origin: c.origin, profile: c.profile, messages: c.messages });
     S.busy = false;
