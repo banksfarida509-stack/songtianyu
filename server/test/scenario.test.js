@@ -36,10 +36,28 @@ test('无 AI 时也能记下在职情况和住处', async () => {
   assert.equal(d.slots.live, '铁西区');
 });
 
-test('主动投递 + 信息不全 → 先问资格证', async () => {
+test('主动投递 + 信息不全 → 先问在职情况，不问教资', async () => {
   const d = await suggestReply({ verdict: '待确认', slots: {} }, ask, { settings, db, origin: 'applied', offer });
   assert.equal(d.intent, '投递-待确认');
-  assert.match(d.reply, /资格证/);
+  assert.match(d.reply, /在职/);
+  assert.doesNotMatch(d.reply, /资格证/);
+});
+
+test('按顺序问基本情况：在职 → 住处 → 科目 → 开始工作时间 → 邀约；从不追问教资', async () => {
+  const base = [{ dir: 'out', text: '你好' }, { dir: 'in', text: '你好' }];
+  const step = async slots => (await suggestReply({ verdict: '推荐', slots }, base, { settings, db, origin: 'greeted', offer })).reply;
+  assert.match(await step({}), /在职/);
+  assert.match(await step({ employed: '离职' }), /住/);
+  assert.match(await step({ employed: '离职', live: '铁西' }), /科目/);
+  assert.match(await step({ employed: '离职', live: '铁西', subject: '数学' }), /开始工作/);
+  assert.match(await step({ employed: '离职', live: '铁西', subject: '数学', arrive: '下周' }), /初试/);
+  for (const s of [{}, { employed: '离职' }]) assert.doesNotMatch(await step(s), /资格证/);
+});
+
+test('无 AI 时也能记下想教的科目和开始工作时间', async () => {
+  const d = await suggestReply({ verdict: '推荐', slots: {} }, [{ dir: 'out', text: '想教哪科？' }, { dir: 'in', text: '我想教初中数学，下周就可以开始上班' }], { settings, db, origin: 'greeted', offer });
+  assert.equal(d.slots.subject, '初中数学');
+  assert.equal(d.slots.arrive, '下周');
 });
 
 test('平台自动招呼语在前、候选人发附件简历 → 仍按投递处理', async () => {
