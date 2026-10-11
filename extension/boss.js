@@ -54,13 +54,37 @@
     if (row.querySelector('[class*="resume"], [class*="card"], [class*="file"]') && /简历|附件/.test(s)) s = `[卡片·附件简历] ${s}`;
     return s.slice(0, 500);
   }
-  // current conversation: the highlighted row of the left list, else the chat header
+  // words on the page that are menu / tab labels, never a candidate's name
+  const UI_WORDS = new Set(['沟通', '全部', '新招呼', '未读', '已读', '在线', '消息', '职位', '聊天', '牛人', '推荐', '搜索', '互动', '设置', '我的', '工具', '道具',
+    '仅沟通', '有交换', '有面试', '收藏', '更多', '筛选', '批量', '标记', '置顶', '不合适', '刚刚', '昨天', '今天', '星期', '附件简历', '在线简历', '沟通职位', '发送', '招聘']);
+  const nameIn = s => String(s || '').split(/[\s|·•,，:：()（）]+/).find(w => /^[一-龥]{2,6}$/.test(w) && !UI_WORDS.has(w) && !/老师$|教师$|先生$|女士$/.test(w) || /^[一-龥](先生|女士)$/.test(w)) || '';
+  // the conversation list on the left: the largest group of same-class siblings that hold a name
+  function listRows() {
+    const groups = new Map();
+    for (const e of document.querySelectorAll('li, div')) {
+      const r = e.getBoundingClientRect();
+      if (r.left > window.innerWidth * 0.45 || r.height < 40 || r.height > 160 || r.width < 150 || !e.parentElement) continue;
+      const key = e.parentElement;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(e);
+    }
+    let best = [];
+    for (const kids of groups.values()) {
+      const named = kids.filter(k => visible(k) && nameIn(textOf(k)));
+      if (named.length >= 2 && named.length > best.length) best = named;
+    }
+    return best.map(row => {
+      const nameEl = row.querySelector('[class*="name"]');
+      return { row, name: nameIn(textOf(nameEl)) || nameIn(textOf(row)), top: row.getBoundingClientRect().top };
+    }).filter(x => x.name);
+  }
+  // current conversation: the chat header's name, else the highlighted row of the left list
   function currentName() {
-    const sel = [...document.querySelectorAll('[class*="selected"], [class*="active"], [class*="current"]')]
-      .find(e => visible(e) && e.getBoundingClientRect().left < window.innerWidth * 0.4 && /[一-龥]{2,}/.test(textOf(e)) && e.getBoundingClientRect().height < 140);
-    const head = [...document.querySelectorAll('[class*="header"] [class*="name"], [class*="top-info"] [class*="name"], [class*="chat-title"]')].find(visible);
-    const word = s => (s.split(/\s+/).find(w => /^[一-龥·]{2,8}$/.test(w)) || '');
-    return word(textOf(head || sel || document.createElement('i')));
+    const head = [...document.querySelectorAll('[class*="top-info"] [class*="name"], [class*="chat-title"] [class*="name"], [class*="conversation"] [class*="header"] [class*="name"], [class*="base-info"] [class*="name"], [class*="geek-info"] [class*="name"]')]
+      .find(e => visible(e) && e.getBoundingClientRect().left > window.innerWidth * 0.3 && nameIn(textOf(e)));
+    if (head) return nameIn(textOf(head));
+    const sel = listRows().find(x => /selected|active|current|cur\b|checked/i.test(cls(x.row)) || [...x.row.querySelectorAll('*')].some(c => /selected|active|current/i.test(cls(c))));
+    return sel ? sel.name : '';
   }
   function currentJob() {
     const e = [...document.querySelectorAll('[class*="position"], [class*="job-name"], [class*="job"]')].find(x => visible(x) && /教师|老师|教/.test(textOf(x)) && textOf(x).length < 40);
@@ -68,7 +92,7 @@
   }
   let lastSig = '';
   function readChat() {
-    if (!isChat()) return;
+    if (!isChat() || collecting) return;
     const rows = messageRows();
     const name = currentName();
     if (!rows.length || !name) return;
@@ -140,7 +164,20 @@
     }
     return false;
   }
+  const redBg = el => { const m = getComputedStyle(el).backgroundColor.match(/\d+/g); return !!(m && +m[0] > 180 && +m[1] < 130 && +m[2] < 130 && (m[3] === undefined || +m[3] > 0)); };
+  // a list row is unread when it holds a red number badge, a badge-class number, or a small red dot
+  function rowUnread(row) {
+    for (const e of row.querySelectorAll('*')) {
+      if (!visible(e)) continue;
+      const t = (e.textContent || '').trim(), r = e.getBoundingClientRect();
+      if (e.children.length === 0 && /^\d{1,3}\+?$/.test(t) && r.width <= 40 && (isRedBadge(e) || /badge|unread|notice|count|num/i.test(cls(e)))) return true;
+      if (!t && r.width >= 4 && r.width <= 14 && Math.abs(r.width - r.height) <= 2 && redBg(e)) return true;
+    }
+    return false;
+  }
   function badgeRows() {
+    const fromList = listRows().filter(x => rowUnread(x.row));
+    if (fromList.length) return fromList.sort((a, b) => a.top - b.top);
     const badges = [...document.querySelectorAll('span, div, i, em, sup, b')]
       .filter(e => e.children.length === 0 && /^\d{1,3}\+?$/.test((e.textContent || '').trim()) && visible(e) && (isRedBadge(e) || /badge|unread|notice|count/i.test(cls(e)) && e.getBoundingClientRect().left < window.innerWidth * 0.45));
     const rows = [];
@@ -148,7 +185,7 @@
       let row = b;
       for (let k = 0; k < 12 && row && (row.getBoundingClientRect().height < 50 || !/[一-龥]{2,}/.test(textOf(row))); k++) row = row.parentElement;
       if (!row || row.getBoundingClientRect().height > 160) continue;
-      const name = textOf(row).split(/\s+/).find(w => /^[一-龥·]{2,8}$/.test(w)) || '';
+      const name = nameIn(textOf(row.querySelector('[class*="name"]'))) || nameIn(textOf(row));
       if (name && !rows.some(r => r.name === name)) rows.push({ row, name, top: row.getBoundingClientRect().top });
     }
     return rows.sort((a, b) => a.top - b.top);
@@ -169,6 +206,40 @@
     post('openResult', { reqId, ok: false, failed: true, id: `row:${row.name}`, msg: `打不开会话「${row.name}」，已跳过` });
   }
 
+  // ---------- past conversations (read only: opens each, never types or sends) ----------
+  // conversations with unread messages are skipped so they are not marked as read
+  let collecting = false;
+  function readMessages(name) {
+    return messageRows().map(r => ({ dir: dirOf(r), text: bubbleText(r) })).filter(m => m.text)
+      .map((m, i) => ({ ...m, id: `${name}#${i}#${m.dir}#${m.text.slice(0, 30)}` })).slice(-200);
+  }
+  async function collectHistory(reqId, max) {
+    if (collecting) return post('historyResult', { reqId, ok: false, msg: '正在采集中' });
+    const all = listRows();
+    if (!all.length) return post('historyResult', { reqId, ok: false, msg: '没认出左侧的会话列表（请把诊断信息发给技术支持）' });
+    collecting = true;
+    const list = all.filter(x => !rowUnread(x.row)).slice(0, max || 30);
+    const out = []; let skipped = all.length - list.length;
+    for (let i = 0; i < list.length && collecting; i++) {
+      const { name } = list[i];
+      // the row element may have been re-rendered: look it up again by name
+      const row = (listRows().find(x => x.name === name) || list[i]).row;
+      if (currentName() !== name) {
+        realClick(row);
+        let ok = false;
+        for (let k = 0; k < 14 && !ok; k++) { await wait(300); ok = currentName() === name; }
+        if (!ok) { const nm = [...row.querySelectorAll('*')].find(e => e.children.length === 0 && textOf(e) === name); if (nm) { realClick(nm); for (let k = 0; k < 10 && !ok; k++) { await wait(300); ok = currentName() === name; } } }
+        if (!ok) { skipped++; continue; }
+        await wait(800 + Math.random() * 800); // let the messages render
+      }
+      const messages = readMessages(name);
+      if (messages.length) out.push({ sessionId: `boss:${name}:${currentJob()}`, uid: '', name, job: currentJob(), messages });
+      post('historyProgress', { reqId, done: i + 1, total: list.length, name });
+    }
+    collecting = false;
+    post('historyResult', { reqId, ok: true, sessions: out, skipped });
+  }
+
   // ---------- diagnostics (structure only: class names, counts, short labels) ----------
   function diagnose() {
     const top = (sel, n = 12) => [...document.querySelectorAll(sel)].filter(visible).slice(0, n).map(e => ({ tag: e.tagName, cls: cls(e).slice(0, 80) }));
@@ -182,6 +253,7 @@
       input: (() => { const e = chatInput(); return e ? { tag: e.tagName, cls: cls(e).slice(0, 80), id: e.id } : null; })(),
       sendBtn: (() => { const e = sendBtn(); return e ? { tag: e.tagName, cls: cls(e).slice(0, 80) } : null; })(),
       badgeRows: badgeRows().map(r => r.name).slice(0, 10),
+      listRows: listRows().slice(0, 8).map(x => ({ name: x.name, cls: cls(x.row).slice(0, 60), unread: rowUnread(x.row) })),
       listLike: top('[class*="list"] [class*="item"], [class*="geek"], [class*="friend"]', 8),
       buttons: [...document.querySelectorAll('button, [class*="btn"]')].filter(visible).map(textOf).filter(t => t && t.length < 8).slice(0, 30),
     };
@@ -196,7 +268,8 @@
     if (d.type === 'nextUnread') nextUnread(d.reqId, d.skip);
     if (d.type === 'diagnose') { let r; try { r = diagnose(); } catch (er) { r = { error: String(er && er.message || er) }; } post('diagResult', { reqId: d.reqId, ok: true, data: r }); }
     if (d.type === 'invite') post('inviteResult', { reqId: d.reqId, ok: false, msg: 'BOSS 直聘的自动发面试邀约还在适配中，请你手动点「约面试」' });
-    if (d.type === 'history') post('historyResult', { reqId: d.reqId, ok: false, msg: 'BOSS 直聘的历史采集还在适配中' });
+    if (d.type === 'history') collectHistory(d.reqId, d.max);
+    if (d.type === 'historyStop') collecting = false;
     if (d.type === 'reread') { lastSig = ''; readChat(); }
   });
   setInterval(() => { try { readChat(); } catch (er) { post('error', { msg: String(er && er.message || er) }); } }, 1500);
