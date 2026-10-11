@@ -99,6 +99,36 @@
     if (applied) return 'applied';
     return !first ? 'unknown' : first.flow === 'in' ? 'applied' : 'greeted';
   }
+  // Text of any timeline item. Besides plain text, candidates send cards
+  // (附件简历, 交换微信, 面试邀约 …) whose text sits in other fields or in a JSON
+  // string; those count as messages too, marked with [卡片].
+  function cardText(m) {
+    const seen = [];
+    const walk = (v, d) => {
+      if (v == null || d > 3 || seen.length > 6) return;
+      if (typeof v === 'string') {
+        const s = v.trim();
+        if (/^[[{]/.test(s)) { try { return walk(JSON.parse(s), d + 1); } catch { /* plain text */ } }
+        if (s && s.length < 200 && !/^https?:|^\d+$|^[\w-]{16,}$/.test(s) && /[一-龥]/.test(s) && !seen.includes(s)) seen.push(s);
+        return;
+      }
+      if (Array.isArray(v)) return v.slice(0, 6).forEach(x => walk(x, d + 1));
+      if (typeof v === 'object') for (const [k, x] of Object.entries(v)) if (!/avatar|icon|url|img|phone|mobile|token|sign/i.test(k)) walk(x, d + 1);
+    };
+    for (const k of ['text', 'content', 'custom', 'attach', 'body', 'title', 'desc', 'msg', 'data', 'pushContent', 'tip']) walk(m[k], 0);
+    return seen.slice(0, 3).join(' ');
+  }
+  function toMsgs(tl, n) {
+    const out = [];
+    for (const m of tl) {
+      if (!m || (m.flow !== 'in' && m.flow !== 'out')) continue;
+      let text = m.type === 'text' ? m.text : cardText(m);
+      if (!text) continue;
+      if (m.type !== 'text') text = `[卡片${/简历|附件/.test(text) ? '·附件简历' : ''}] ${text}`;
+      out.push({ id: m.idServer || m.idClient, dir: m.flow === 'in' ? 'in' : 'out', text: String(text).slice(0, 500), at: m.time ? new Date(m.time).toISOString() : '' });
+    }
+    return out.slice(-n);
+  }
   let lastChatSig = '';
   const profileCache = new Map();
   function readChat() {
@@ -106,7 +136,7 @@
     if (!st || !st.activeSessionId) return;
     const sess = st.currentSession || (st.sessions || []).find(s => s.sessionId === st.activeSessionId) || {};
     const tl = (st.timelineMap?.[st.activeSessionId]?.timeline) || [];
-    const msgs = tl.filter(m => m.type === 'text' && m.text).slice(-30).map(m => ({ id: m.idServer || m.idClient, dir: m.flow === 'in' ? 'in' : 'out', text: m.text, at: m.time ? new Date(m.time).toISOString() : '' }));
+    const msgs = toMsgs(tl, 30);
     const sig = st.activeSessionId + ':' + (msgs.length ? msgs[msgs.length - 1].id : '');
     if (sig === lastChatSig) return;
     lastChatSig = sig;
@@ -228,20 +258,38 @@
     if (r.ok) return post('openResult', { reqId, ok: true, how: r.how, msg: `打开会话：${sess.name || ''}（${r.how}）` });
     post('openResult', { reqId, ok: false, failed: true, id, msg: `打不开会话「${sess.name || ''}」，已跳过（试过：${r.tried.join('、') || '没找到会话行'}）` });
   }
+  // sessions whose row in the left list shows a red number badge (when the unread
+  // count is not readable from the store)
+  function badgeSessions(st) {
+    const sessions = st.sessions || [];
+    const badges = [...document.querySelectorAll('[class*="badge"], [class*="unread"], [class*="count"], [class*="num"], [class*="dot"], sup')]
+      .filter(e => visible(e) && /^\d{1,3}\+?$/.test((e.innerText || '').trim()) && e.getBoundingClientRect().left < window.innerWidth * 0.45);
+    const out = [];
+    for (const b of badges) {
+      let row = b;
+      for (let k = 0; k < 8 && row && row.getBoundingClientRect().height < 40; k++) row = row.parentElement;
+      for (let k = 0; k < 4 && row && !sessions.some(s => s.name && (row.innerText || '').includes(s.name)); k++) row = row.parentElement;
+      const text = row ? row.innerText || '' : '';
+      const s = sessions.find(x => x.name && text.includes(x.name) && (!x.jobTitle || text.includes(x.jobTitle)));
+      if (s && !out.includes(s)) out.push(s);
+    }
+    return out;
+  }
   // next conversation where the candidate wrote last and we have not answered
   function nextUnread(reqId, skip) {
     const st = rootVm()?.$store?.state?.im;
     if (!st) return post('openResult', { reqId, ok: false, msg: '未读到会话列表' });
     if ((chatInput()?.value || '').trim()) return post('openResult', { reqId, ok: false, msg: '输入框有内容，暂不切换会话' });
-    const cand = (st.sessions || []).filter(s => !isActive(st, s) && unreadOf(s) > 0 && !(skip || []).includes(sessId(s)));
+    const usable = s => !isActive(st, s) && !(skip || []).includes(sessId(s));
+    let cand = (st.sessions || []).filter(s => usable(s) && unreadOf(s) > 0);
+    if (!cand.length) cand = badgeSessions(st).filter(usable);
     if (!cand.length) return post('openResult', { reqId, ok: false, none: true, msg: '没有未读会话' });
     openSession(sessId(cand[0]), reqId);
   }
 
   // read past conversations one by one (opens each; never types or sends).
   // Sessions with unread messages are skipped so they are not marked as read.
-  const msgsOf = (st, sid) => ((st.timelineMap?.[sid]?.timeline) || []).filter(m => m.type === 'text' && m.text)
-    .slice(-200).map(m => ({ id: m.idServer || m.idClient, dir: m.flow === 'in' ? 'in' : 'out', text: m.text, at: m.time ? new Date(m.time).toISOString() : '' }));
+  const msgsOf = (st, sid) => toMsgs((st.timelineMap?.[sid]?.timeline) || [], 200);
   let collecting = false;
   async function collectHistory(reqId, max) {
     const st = rootVm()?.$store?.state?.im;
