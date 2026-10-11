@@ -134,7 +134,7 @@
   function readChat() {
     const st = rootVm()?.$store?.state?.im;
     if (!st || !st.activeSessionId) return;
-    const sess = st.currentSession || (st.sessions || []).find(s => s.sessionId === st.activeSessionId) || {};
+    const sess = st.currentSession || sessionsOf(st).find(s => sessId(s) === st.activeSessionId) || {};
     const tl = (st.timelineMap?.[st.activeSessionId]?.timeline) || [];
     const msgs = toMsgs(tl, 30);
     const sig = st.activeSessionId + ':' + (msgs.length ? msgs[msgs.length - 1].id : '');
@@ -142,7 +142,7 @@
     lastChatSig = sig;
     // the resume panel may render after the messages; retry until found
     if (!profileCache.get(st.activeSessionId)) { try { profileCache.set(st.activeSessionId, resumeFor(sess)); } catch { /* try again next time */ } }
-    post('chat', { sessionId: st.activeSessionId, uid: sess.resumeNumber || '', name: sess.name || '', job: sess.jobTitle || '', state: sess.candidateState || '',
+    post('chat', { sessionId: st.activeSessionId, uid: sess.resumeNumber || '', name: nameOf(sess), job: sess.jobTitle || '', state: sess.candidateState || '',
       origin: originOf(tl), profile: profileCache.get(st.activeSessionId), messages: msgs });
   }
 
@@ -186,13 +186,28 @@
   }
   const unreadOf = s => { for (const [k, v] of Object.entries(s || {})) if (/unread/i.test(k) && typeof v === 'number') return v; return 0; };
   const sessId = s => s && (s.sessionId || s.id || s.sessionID);
+  const nameOf = s => (s && (s.name || s.userName || s.nickName || s.nick || s.candidateName)) || '';
+  // the conversation list: usually state.im.sessions, otherwise the array (or id→session map)
+  // in the im state whose items look like sessions
+  function sessionsOf(st) {
+    if (!st) return [];
+    if (Array.isArray(st.sessions) && st.sessions.length) return st.sessions;
+    let best = [];
+    for (const v of Object.values(st)) {
+      const arr = Array.isArray(v) ? v : v && typeof v === 'object' ? Object.values(v) : null;
+      if (!arr || arr.length <= best.length) continue;
+      const ok = arr.filter(x => x && typeof x === 'object' && sessId(x) && nameOf(x)).length;
+      if (ok && ok >= arr.length * 0.6) best = arr.filter(x => x && typeof x === 'object' && sessId(x));
+    }
+    return best;
+  }
   // the active id may be formatted differently from the list's id (prefixes), so compare loosely
   function isActive(st, s) {
     const a = String(st.activeSessionId || ''), id = String(sessId(s) || '');
     if (!a || !id) return false;
     if (a === id || a.endsWith(id) || id.endsWith(a)) return true;
     const cur = st.currentSession;
-    return !!(cur && ((sessId(cur) && String(sessId(cur)) === id) || (s.name && cur.name === s.name && cur.jobTitle === s.jobTitle)));
+    return !!(cur && ((sessId(cur) && String(sessId(cur)) === id) || (nameOf(s) && nameOf(cur) === nameOf(s) && cur.jobTitle === s.jobTitle)));
   }
   function sessionEl(sess) {
     const id = sessId(sess);
@@ -202,7 +217,7 @@
       if (vm && visible(el) && vm.$props && Object.values(vm.$props).some(p => p && typeof p === 'object' && sessId(p) === id)) return el;
     }
     // fall back to the list row whose text contains the name, in the left part of the screen
-    const name = sess.name || sess.userName || '';
+    const name = nameOf(sess);
     if (!name) return null;
     const rows = [...document.querySelectorAll('li, [class*="session"], [class*="item"]')].filter(e => {
       if (!visible(e) || !(e.innerText || '').includes(name)) return false;
@@ -222,7 +237,7 @@
     const el = sessionEl(sess);
     if (el) {
       ways.push(['点会话行', () => realClick(el)]);
-      const nm = (sess.name || '').trim();
+      const nm = nameOf(sess).trim();
       const nameEl = nm && [...el.querySelectorAll('*')].find(e => e.children.length === 0 && (e.innerText || '').trim() === nm);
       if (nameEl) ways.push(['点姓名', () => realClick(nameEl)]);
       for (let vm = el.__vue__, k = 0; vm && k < 3; vm = vm.$parent, k++) {
@@ -252,39 +267,64 @@
   }
   async function openSession(id, reqId) {
     const st = rootVm()?.$store?.state?.im;
-    const sess = (st?.sessions || []).find(s => sessId(s) === id);
+    const sess = sessionsOf(st).find(s => sessId(s) === id);
     if (!sess) return post('openResult', { reqId, ok: false, msg: '没找到这个会话' });
     const r = await activate(st, sess);
-    if (r.ok) return post('openResult', { reqId, ok: true, how: r.how, msg: `打开会话：${sess.name || ''}（${r.how}）` });
-    post('openResult', { reqId, ok: false, failed: true, id, msg: `打不开会话「${sess.name || ''}」，已跳过（试过：${r.tried.join('、') || '没找到会话行'}）` });
+    if (r.ok) return post('openResult', { reqId, ok: true, how: r.how, msg: `打开会话：${nameOf(sess)}（${r.how}）` });
+    post('openResult', { reqId, ok: false, failed: true, id, msg: `打不开会话「${nameOf(sess)}」，已跳过（试过：${r.tried.join('、') || '没找到会话行'}）` });
   }
   // sessions whose row in the left list shows a red number badge (when the unread
   // count is not readable from the store)
-  function badgeSessions(st) {
-    const sessions = st.sessions || [];
+  // rows in the left list that show a red number badge (unread), top to bottom
+  function badgeRows() {
     const badges = [...document.querySelectorAll('[class*="badge"], [class*="unread"], [class*="count"], [class*="num"], [class*="dot"], sup')]
       .filter(e => visible(e) && /^\d{1,3}\+?$/.test((e.innerText || '').trim()) && e.getBoundingClientRect().left < window.innerWidth * 0.45);
-    const out = [];
+    const rows = [];
     for (const b of badges) {
       let row = b;
-      for (let k = 0; k < 8 && row && row.getBoundingClientRect().height < 40; k++) row = row.parentElement;
-      for (let k = 0; k < 4 && row && !sessions.some(s => s.name && (row.innerText || '').includes(s.name)); k++) row = row.parentElement;
-      const text = row ? row.innerText || '' : '';
-      const s = sessions.find(x => x.name && text.includes(x.name) && (!x.jobTitle || text.includes(x.jobTitle)));
+      // climb to the list row: the ancestor that is about as tall as one conversation entry
+      for (let k = 0; k < 10 && row && row.getBoundingClientRect().height < 50; k++) row = row.parentElement;
+      if (!row || row.getBoundingClientRect().height > 160) continue;
+      // first word that is not the badge number or the “在线” tag
+      const name = (row.innerText || '').trim().split(/\s+/).find(w => !/^\d+\+?$/.test(w) && w !== '在线') || '';
+      if (!rows.some(r => r.row === row)) rows.push({ row, name, top: row.getBoundingClientRect().top });
+    }
+    return rows.sort((a, b) => a.top - b.top);
+  }
+  function badgeSessions(st) {
+    const sessions = sessionsOf(st), out = [];
+    for (const { row } of badgeRows()) {
+      const text = row.innerText || '';
+      const s = sessions.find(x => nameOf(x) && text.includes(nameOf(x)) && (!x.jobTitle || text.includes(x.jobTitle)));
       if (s && !out.includes(s)) out.push(s);
     }
     return out;
   }
-  // next conversation where the candidate wrote last and we have not answered
+  // click a badge row directly (used when the session list cannot be read) and verify the switch
+  async function openRow({ row, name }, reqId) {
+    const st = rootVm()?.$store?.state?.im;
+    const before = st?.activeSessionId;
+    const targets = [row, ...[...row.querySelectorAll('*')].filter(e => e.children.length === 0 && (e.innerText || '').trim() === name)];
+    for (const t of targets) {
+      realClick(t);
+      for (let k = 0; k < 8; k++) { await wait(250); if (st?.activeSessionId && st.activeSessionId !== before) return post('openResult', { reqId, ok: true, how: '点未读行', msg: `打开会话：${name}（点未读行）` }); }
+    }
+    post('openResult', { reqId, ok: false, failed: true, id: `row:${name}`, msg: `打不开会话「${name}」，已跳过（试过：点未读行）` });
+  }
+  // next conversation with unread messages
   function nextUnread(reqId, skip) {
     const st = rootVm()?.$store?.state?.im;
-    if (!st) return post('openResult', { reqId, ok: false, msg: '未读到会话列表' });
+    if (!st) return post('openResult', { reqId, ok: false, msg: '未读到聊天数据（页面还在加载？）' });
     if ((chatInput()?.value || '').trim()) return post('openResult', { reqId, ok: false, msg: '输入框有内容，暂不切换会话' });
     const usable = s => !isActive(st, s) && !(skip || []).includes(sessId(s));
-    let cand = (st.sessions || []).filter(s => usable(s) && unreadOf(s) > 0);
+    let cand = sessionsOf(st).filter(s => usable(s) && unreadOf(s) > 0);
     if (!cand.length) cand = badgeSessions(st).filter(usable);
-    if (!cand.length) return post('openResult', { reqId, ok: false, none: true, msg: '没有未读会话' });
-    openSession(sessId(cand[0]), reqId);
+    if (cand.length) return openSession(sessId(cand[0]), reqId);
+    // session list not readable: open the first red-badge row that is not the current one
+    const cur = nameOf(st.currentSession || {});
+    const row = badgeRows().find(r => r.name && r.name !== cur && !(skip || []).includes(`row:${r.name}`));
+    if (row) return openRow(row, reqId);
+    post('openResult', { reqId, ok: false, none: true, msg: '没有未读会话', sessions: sessionsOf(st).length, badges: badgeRows().length });
   }
 
   // read past conversations one by one (opens each; never types or sends).
@@ -296,8 +336,8 @@
     if (!st) return post('historyResult', { reqId, ok: false, msg: '未读到会话列表' });
     if (collecting) return post('historyResult', { reqId, ok: false, msg: '正在采集中' });
     collecting = true;
-    const list = (st.sessions || []).filter(s => unreadOf(s) === 0).slice(0, max || 30);
-    const out = []; let skipped = (st.sessions || []).length - list.length;
+    const list = sessionsOf(st).filter(s => unreadOf(s) === 0).slice(0, max || 30);
+    const out = []; let skipped = sessionsOf(st).length - list.length;
     for (let i = 0; i < list.length && collecting; i++) {
       const s = list[i], id = sessId(s);
       let msgs = msgsOf(st, id);
@@ -309,8 +349,8 @@
         msgs = msgsOf(st, st.activeSessionId);
       }
       const cur = st.currentSession && sessId(st.currentSession) === id ? st.currentSession : s;
-      if (msgs.length) out.push({ sessionId: id, uid: cur.resumeNumber || s.resumeNumber || '', name: cur.name || s.name || '', job: cur.jobTitle || s.jobTitle || '', messages: msgs });
-      post('historyProgress', { reqId, done: i + 1, total: list.length, name: s.name || '' });
+      if (msgs.length) out.push({ sessionId: id, uid: cur.resumeNumber || s.resumeNumber || '', name: nameOf(cur) || nameOf(s), job: cur.jobTitle || s.jobTitle || '', messages: msgs });
+      post('historyProgress', { reqId, done: i + 1, total: list.length, name: nameOf(s) });
     }
     collecting = false;
     post('historyResult', { reqId, ok: true, sessions: out, skipped });
@@ -401,10 +441,12 @@
       url: location.pathname, session: shape(sess), messageTypes: [...new Set(tl.map(m => `${m.type}/${m.flow}`))],
       firstMessage: tl[0] ? { type: tl[0].type, flow: tl[0].flow, keys: Object.keys(tl[0]).slice(0, 30) } : null,
       resumeFound: !!resumeFor(sess || {}), openHow,
+      imKeys: Object.keys(st || {}).slice(0, 60), sessionsFound: sessionsOf(st).length,
+      unreadInStore: sessionsOf(st).filter(s => unreadOf(s) > 0).map(nameOf).slice(0, 10), badgeRows: badgeRows().map(r => r.name).slice(0, 10),
       sessionActions: Object.keys(rootVm()?.$store?._actions || {}).filter(a => /session/i.test(a)).slice(0, 40),
       sessionMutations: Object.keys(rootVm()?.$store?._mutations || {}).filter(a => /session/i.test(a)).slice(0, 40),
-      unreadKeys: Object.keys((st?.sessions || [])[0] || {}).filter(k => /unread|read/i.test(k)),
-      sessionRow: (() => { const s0 = (st?.sessions || [])[0]; const el = s0 && sessionEl(s0); return el ? { tag: el.tagName, cls: String(el.className).slice(0, 80), vm: el.__vue__ ? vmName(el.__vue__) : '', methods: Object.keys(el.__vue__?.$options?.methods || {}).slice(0, 20) } : null; })(),
+      unreadKeys: Object.keys(sessionsOf(st)[0] || {}).filter(k => /unread|read/i.test(k)),
+      sessionRow: (() => { const s0 = sessionsOf(st)[0]; const el = s0 && sessionEl(s0); return el ? { tag: el.tagName, cls: String(el.className).slice(0, 80), vm: el.__vue__ ? vmName(el.__vue__) : '', methods: Object.keys(el.__vue__?.$options?.methods || {}).slice(0, 20) } : null; })(),
       quickButtons: [...document.querySelectorAll('button, .km-button')].filter(visible).map(b => (b.innerText || '').trim()).filter(t => t && t.length < 8).slice(0, 30),
     };
   }

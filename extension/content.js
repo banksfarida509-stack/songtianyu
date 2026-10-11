@@ -88,6 +88,7 @@
     const A = S.auto;
     let b = `<div class="hra-auto ${A?.enabled && !S.autoPaused ? 'on' : ''}"><span>全自动回复：<b>${!A ? '读取中' : !A.enabled ? '未开启' : S.autoPaused ? '已暂停' : '运行中'}</b></span>
       ${A?.enabled ? `<button class="hra-btn sm" data-a="pause">${S.autoPaused ? '恢复' : '暂停'}</button>` : ''}
+      <i id="hra-patrol">${S.patrolNote ? `巡检：${esc(S.patrolNote)}` : ''}</i>
       <i>${A ? `本小时自动发送 ${A.sentLastHour || 0}/${A.maxPerHour || 0}` : ''}${A && !A.enabled ? ' · 在后台“设置 → 约聊回复方式”里打开' : ''} · <a href="#" data-a="kb">编辑知识库</a></i></div>`;
     const c = S.chat;
     if (!c) b += '<p class="hra-muted">打开一个会话，插件会读取最新消息，分类后按设置自动回复或给出建议。</p>';
@@ -360,20 +361,44 @@
   }
 
   // full-auto patrol: open the next conversation with unread messages when idle
+  // why the patrol is (not) moving, shown on the panel
+  const note = t => {
+    if (S.patrolNote === t) return;
+    S.patrolNote = t;
+    const el = panel.querySelector('#hra-patrol');
+    if (el) el.textContent = `巡检：${t}`; else draw();
+  };
+  let patrolling = false;
   async function patrol() {
-    if (S.dead) return;
+    if (S.dead || patrolling) return;
+    patrolling = true;
+    try { await patrolOnce(); } finally { patrolling = false; }
+  }
+  async function patrolOnce() {
     const A = S.auto;
-    if (!isIm() || !A?.enabled || A.scanUnread === false || S.autoPaused || S.risk || S.busy || S.pending || S.sending || S.collecting) return;
-    if (Date.now() - S.userAt < 45000) return;                 // the recruiter is using the page
+    if (!isIm()) return;
+    if (!A?.enabled) return note('全自动未开启，不自动打开未读会话');
+    if (A.scanUnread === false) return note('后台设置里关闭了“自动打开有未读消息的会话”');
+    if (S.autoPaused) return note('已暂停');
+    if (S.risk) return note('平台风控提示，已停止');
+    if (S.collecting) return note('正在采集历史约聊');
+    if (S.busy) return note('AI 正在写回复…');
+    if (S.pending) return note('等待自动发送当前回复');
+    if (S.sending) return note('正在发送…');
+    const idle = Math.ceil((20000 - (Date.now() - S.userAt)) / 1000);
+    if (idle > 0) return note(`你正在操作页面，${idle} 秒后继续巡检`);
     const waitingOnYou = S.draft && !S.draft.sentAuto && S.decision?.mode !== 'auto';
-    if (Date.now() - S.handledAt < (waitingOnYou ? 180000 : 8000)) return; // give a semi draft 3 min before moving on
+    const left = Math.ceil(((waitingOnYou ? 60000 : 6000) - (Date.now() - S.handledAt)) / 1000);
+    if (left > 0) return note(waitingOnYou ? `当前会话的建议等你处理，${left} 秒后先去处理其他未读` : `${left} 秒后查找下一个未读会话`);
+    note('正在查找未读会话…');
     const r = await callMain('nextUnread', { skip: S.scanSkip }, 'openResult', 30000);
-    if (r.ok) log(r.msg);
+    if (r.ok) { log(r.msg); note(r.msg); }
     else if (r.failed && r.id) {
       // could not switch to it: skip for 10 minutes instead of retrying every 15 s
       S.scanSkip.push(r.id); setTimeout(() => { S.scanSkip = S.scanSkip.filter(x => x !== r.id); }, 600000);
-      addTodoFor(r.id, r.msg); log(r.msg);
-    } else if (!r.none && /没找到/.test(r.msg)) log(r.msg);
+      addTodoFor(r.id, r.msg); log(r.msg); note(r.msg);
+    } else if (r.none) note(`没有未读会话（读到会话 ${r.sessions ?? '?'} 个、红色角标 ${r.badges ?? '?'} 个）`);
+    else { log(r.msg); note(r.msg); }
   }
   ['mousedown', 'keydown', 'wheel'].forEach(t => document.addEventListener(t, e => { if (e.isTrusted && !panel.contains(e.target)) S.userAt = Date.now(); }, true));
 
@@ -407,7 +432,7 @@
   // keep lines alive when the page re-renders; countdown; heartbeat
   setInterval(() => { if (isRec()) paintLines(); }, 2000);
   setInterval(() => { const el = panel.querySelector('#hra-cd'); if (el && S.pending) el.textContent = Math.max(0, Math.ceil((S.pending.due - Date.now()) / 1000)); }, 1000);
-  setInterval(patrol, 15000);
+  setInterval(patrol, 5000);
   let lastPath = location.pathname;
   setInterval(() => { if (location.pathname !== lastPath) { lastPath = location.pathname; S.draft = null; S.chat = null; S.pending = null; draw(); toMain('reread'); } }, 1000);
   const ping = () => api('/ext/ping', { page: location.pathname, version: VERSION }).then(r => {
