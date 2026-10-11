@@ -66,7 +66,41 @@
   }
 
   // ---------- chat page ----------
+  // resume data for the open conversation: the platform keeps it in some component
+  // or in the session object; find an object that looks like a resume.
+  const looksResume = o => o && typeof o === 'object' && !Array.isArray(o) &&
+    (Array.isArray(o.workExperiences) || Array.isArray(o.educationExperiences) || ('educationLevel' in o && ('age' in o || 'workYears' in o || 'workYearsLabel' in o)));
+  function findResume(root, uid, depth = 0, seen = new Set()) {
+    if (!root || typeof root !== 'object' || depth > 3 || seen.has(root)) return null;
+    seen.add(root);
+    if (looksResume(root) && (!uid || !root.resumeNumber || root.resumeNumber === uid)) return root;
+    for (const v of Object.values(root)) { if (v && typeof v === 'object') { const r = findResume(v, uid, depth + 1, seen); if (r) return r; } }
+    return null;
+  }
+  function resumeFor(sess) {
+    const uid = sess.resumeNumber || '';
+    let r = findResume(sess, uid);
+    if (!r) {
+      let n = 0;
+      for (const el of document.querySelectorAll('div, section, aside')) {
+        if (++n > 4000) break;
+        const vm = el.__vue__;
+        if (!vm || vm.$el !== el) continue;
+        r = findResume(vm.$props, uid) || findResume(vm.$data, uid);
+        if (r) break;
+      }
+    }
+    return r ? { ...pick(r), resumeNumber: r.resumeNumber || uid } : null;
+  }
+  // who started the conversation: candidate (applied / wrote first) or us (greeted)
+  function originOf(tl) {
+    const first = tl.find(m => m && (m.flow === 'in' || m.flow === 'out'));
+    const applied = tl.some(m => m && m.type !== 'text' && /投递|简历|resume|deliver/i.test(JSON.stringify(m).slice(0, 2000)) && m.flow === 'in');
+    if (applied) return 'applied';
+    return !first ? 'unknown' : first.flow === 'in' ? 'applied' : 'greeted';
+  }
   let lastChatSig = '';
+  const profileCache = new Map();
   function readChat() {
     const st = rootVm()?.$store?.state?.im;
     if (!st || !st.activeSessionId) return;
@@ -76,7 +110,10 @@
     const sig = st.activeSessionId + ':' + (msgs.length ? msgs[msgs.length - 1].id : '');
     if (sig === lastChatSig) return;
     lastChatSig = sig;
-    post('chat', { sessionId: st.activeSessionId, uid: sess.resumeNumber || '', name: sess.name || '', job: sess.jobTitle || '', state: sess.candidateState || '', messages: msgs });
+    // the resume panel may render after the messages; retry until found
+    if (!profileCache.get(st.activeSessionId)) { try { profileCache.set(st.activeSessionId, resumeFor(sess)); } catch { /* try again next time */ } }
+    post('chat', { sessionId: st.activeSessionId, uid: sess.resumeNumber || '', name: sess.name || '', job: sess.jobTitle || '', state: sess.candidateState || '',
+      origin: originOf(tl), profile: profileCache.get(st.activeSessionId), messages: msgs });
   }
 
   // ---------- actions (only on explicit request from the recruiter) ----------
@@ -186,6 +223,94 @@
     post('historyResult', { reqId, ok: true, sessions: out, skipped });
   }
 
+  // ---------- interview invitation (平台「约面试」) ----------
+  const dialogs = () => [...document.querySelectorAll('.km-modal, .km-dialog, [role="dialog"], .el-dialog, .km-drawer')].filter(visible);
+  const inviteDialog = () => dialogs().find(d => /面试/.test(d.innerText || '')) || null;
+  const vmsIn = root => { const out = new Set(); for (const el of [root, ...root.querySelectorAll('*')]) if (el.__vue__) out.add(el.__vue__); return [...out]; };
+  const vmName = vm => (vm.$options && (vm.$options.name || vm.$options._componentTag)) || '';
+  const labelOf = el => {
+    const item = el.closest('[class*="form-item"], [class*="formItem"], tr, li') || el.parentElement;
+    const lab = item && item.querySelector('label, [class*="label"]');
+    return ((lab && lab.innerText) || '').replace(/\s+/g, '').slice(0, 20);
+  };
+  // structure of the open invite dialog (labels, component types, buttons) — no personal values
+  function describeDialog(d) {
+    const fields = vmsIn(d).filter(vm => vm.$props && 'value' in vm.$props && vm.$el && visible(vm.$el)).map(vm => {
+      const v = vm.$props.value;
+      return { label: labelOf(vm.$el), comp: vmName(vm), type: v instanceof Date ? 'Date' : Array.isArray(v) ? 'Array' : typeof v,
+        sample: v instanceof Date ? 'Date' : typeof v === 'string' ? (/\d{6,}/.test(v) ? '<数字>' : v.slice(0, 20)) : typeof v === 'number' ? 'number' : Array.isArray(v) ? `len ${v.length}` : String(v).slice(0, 20) };
+    });
+    const buttons = [...d.querySelectorAll('button, .km-button')].filter(visible).map(b => (b.innerText || '').trim()).filter(Boolean).slice(0, 12);
+    const labels = [...d.querySelectorAll('label, [class*="label"]')].map(l => (l.innerText || '').trim()).filter(Boolean).slice(0, 30);
+    return { title: (d.querySelector('[class*="title"], [class*="header"]')?.innerText || '').trim().slice(0, 30), fields, labels, buttons };
+  }
+  function setVm(vm, value) { vm.$emit('input', value); vm.$emit('change', value); }
+  async function sendInvite(reqId, { date, slot, place }) {
+    if (!clickByText('约面试')) return post('inviteResult', { reqId, ok: false, msg: '没找到「约面试」按钮' });
+    let d = null;
+    for (let k = 0; k < 15 && !d; k++) { await wait(300); d = inviteDialog(); }
+    if (!d) return post('inviteResult', { reqId, ok: false, msg: '点了「约面试」，但没弹出邀约窗口' });
+    const [h, mi] = String(slot || '09:00').split(':').map(Number);
+    const at = new Date(`${date}T00:00:00`); at.setHours(h, mi, 0, 0);
+    const filled = [];
+    // only the outermost value-holding component of each field (not the inner text box of a picker)
+    const all = vmsIn(d).filter(vm => vm.$props && 'value' in vm.$props && vm.$el && visible(vm.$el));
+    const outer = all.filter(vm => { for (let p = vm.$parent; p; p = p.$parent) if (all.includes(p)) return false; return true; });
+    for (const vm of outer) {
+      try {
+      const name = vmName(vm), lab = labelOf(vm.$el);
+      if (/date|time|picker/i.test(name) || /时间|日期/.test(lab)) {
+        const v = vm.$props.value;
+        const val = /time/i.test(name) && !/date/i.test(name) && typeof v === 'string' ? slot : /date/i.test(name) && !/time/i.test(name) ? new Date(`${date}T00:00:00`) : at;
+        setVm(vm, val); filled.push(lab || name);
+      } else if (place && /地点|地址/.test(lab) && typeof vm.$props.value === 'string' && !vm.$props.value) {
+        setVm(vm, place); filled.push(lab);
+      }
+      } catch { /* leave this field for the recruiter */ }
+    }
+    await wait(600);
+    const ok = [...d.querySelectorAll('button, .km-button')].filter(visible).find(b => /^(发送|确定|确认|发送邀请|发出邀请|立即邀约|发送面试邀请)$/.test((b.innerText || '').trim()));
+    if (!ok) return post('inviteResult', { reqId, ok: false, keepOpen: true, msg: `邀约窗口已打开并填了：${filled.join('、') || '无'}；没找到发送按钮，请你确认后点发送`, shape: describeDialog(d) });
+    realClick(ok);
+    for (let k = 0; k < 12; k++) {
+      await wait(300);
+      if (!document.contains(d) || !visible(d)) return post('inviteResult', { reqId, ok: true, msg: `已发送面试邀约：${date} ${slot}` });
+    }
+    const errs = [...d.querySelectorAll('[class*="error"], [class*="tip"]')].filter(visible).map(e => e.innerText.trim()).filter(Boolean).slice(0, 3).join('；');
+    post('inviteResult', { reqId, ok: false, keepOpen: true, msg: `邀约窗口没能自动提交${errs ? '：' + errs : ''}，请你在窗口里补全后点发送`, shape: describeDialog(d) });
+  }
+  // when the recruiter sends an invite by hand, remember the dialog's shape so automation can be tuned
+  document.addEventListener('click', e => {
+    if (!e.isTrusted) return;
+    const d = inviteDialog();
+    const b = e.target.closest && e.target.closest('button, .km-button');
+    if (d && b && d.contains(b) && /发送|确定|确认|邀约|邀请/.test((b.innerText || '').trim())) post('inviteShape', describeDialog(d));
+  }, true);
+  function clickByText(name) {
+    const b = [...document.querySelectorAll('button, .km-button, div, span, a')].filter(e => visible(e) && e.children.length <= 2 && (e.innerText || '').trim() === name);
+    const inner = b.filter(x => !b.some(o => o !== x && x.contains(o)));
+    const t = inner.find(e => e.tagName === 'BUTTON') || inner[0];
+    if (!t) return false;
+    realClick(t); return true;
+  }
+  // what the page exposes for the open conversation (key names / types only), for tuning
+  function diagnose() {
+    const st = rootVm()?.$store?.state?.im;
+    const shape = (o, d = 0) => {
+      if (o == null || typeof o !== 'object') return typeof o;
+      if (d > 2) return Array.isArray(o) ? 'array' : 'object';
+      if (Array.isArray(o)) return o.length ? [shape(o[0], d + 1)] : [];
+      return Object.fromEntries(Object.keys(o).slice(0, 60).map(k => [k, shape(o[k], d + 1)]));
+    };
+    const sess = st && (st.currentSession || {});
+    const tl = (st && st.timelineMap?.[st.activeSessionId]?.timeline) || [];
+    return {
+      url: location.pathname, session: shape(sess), messageTypes: [...new Set(tl.map(m => `${m.type}/${m.flow}`))],
+      firstMessage: tl[0] ? { type: tl[0].type, flow: tl[0].flow, keys: Object.keys(tl[0]).slice(0, 30) } : null,
+      resumeFound: !!resumeFor(sess || {}), quickButtons: [...document.querySelectorAll('button, .km-button')].filter(visible).map(b => (b.innerText || '').trim()).filter(t => t && t.length < 8).slice(0, 30),
+    };
+  }
+
   function clickNative(name) {
     const b = [...document.querySelectorAll('button, div, span')].find(e => e.offsetParent && e.children.length <= 2 && (e.innerText || '').trim() === name);
     if (!b) return post('actionResult', { ok: false, msg: `没找到“${name}”按钮` });
@@ -280,6 +405,8 @@
     if (d.type === 'open') openSession(d.id, d.reqId);
     if (d.type === 'nextUnread') nextUnread(d.reqId, d.skip);
     if (d.type === 'history') collectHistory(d.reqId, d.max);
+    if (d.type === 'invite') sendInvite(d.reqId, d);
+    if (d.type === 'diagnose') { let r; try { r = diagnose(); } catch (er) { r = { error: String(er && er.message || er) }; } post('diagResult', { reqId: d.reqId, ok: true, data: r }); }
     if (d.type === 'historyStop') collecting = false;
     if (d.type === 'more') {
       // load the next batch of recommend cards (infinite scroll)

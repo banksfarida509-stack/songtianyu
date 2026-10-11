@@ -89,7 +89,9 @@ export const DEFAULT_SETTINGS = {
     maxPerHour: 40,               // 每小时最多自动发送条数
     scanUnread: true,             // 自动打开有未读消息的会话
     repeatLimit: 2,               // 同一问题问到第几遍转本人回复
+    autoInvite: true,             // 约定时间后，全自动模式下自动点平台「约面试」发邀约
     policy: {
+      '投递-符合': 'auto', '投递-不符合': 'auto', '投递-待确认': 'auto',
       提问: 'auto', 提供信息: 'auto', 约面时间: 'auto', 确认参加: 'auto', 改期: 'auto',
       拒绝: 'auto', 议价: 'human', 要求真人: 'human', 交换联系方式: 'semi', 其他: 'semi',
     },
@@ -97,6 +99,8 @@ export const DEFAULT_SETTINGS = {
   },
   // 知识库（整段粘贴，AI 回复只能用这里和下面问答里的事实）
   kbDoc: '',
+  // 我的沟通话术：从历史约聊中学到的沟通逻辑和说法，AI 回复时模仿（可在后台修改）
+  playbook: { enabled: true, text: '', at: '' },
   kb: [
     { id: 'KB-01', q: '面试流程', a: '初试是试讲 15 分钟加面谈 20 分钟，请带身份证和教师资格证原件。' },
     { id: 'KB-02', q: '面试地点', a: '面试统一在学校本部，到了跟前台报名字即可。' },

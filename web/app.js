@@ -22,9 +22,9 @@ async function api(path, opt = {}) {
 }
 
 const S = { me: null, view: 'home', poolTab: '全部', q: '', vfilter: '全部', schedDate: null, picker: null, drawer: null, dtab: 'resume', chatId: null };
-const ATTEND = ['确认参加', '待确认', '待排程', '改期中', '沟通中', '未联系', '不来', '未回复'];
-const ACLS = { '确认参加': 't-ok', '待确认': 't-info', '待排程': 't-warn', '改期中': 't-ai', '沟通中': 't-grey', '未联系': 't-grey', '不来': 't-bad', '未回复': 't-grey' };
-const ACOL = { '确认参加': 'var(--ok)', '待确认': 'var(--info)', '待排程': 'var(--warn)', '改期中': 'var(--ai)', '沟通中': '#AEB3BB', '未联系': '#D5D8DD', '不来': 'var(--bad)', '未回复': '#E4E6EA' };
+const ATTEND = ['确认参加', '待确认', '待排程', '改期中', '沟通中', '未联系', '不来', '不合适', '未回复'];
+const ACLS = { '确认参加': 't-ok', '待确认': 't-info', '待排程': 't-warn', '改期中': 't-ai', '沟通中': 't-grey', '未联系': 't-grey', '不来': 't-bad', '不合适': 't-grey', '未回复': 't-grey' };
+const ACOL = { '确认参加': 'var(--ok)', '待确认': 'var(--info)', '待排程': 'var(--warn)', '改期中': 'var(--ai)', '沟通中': '#AEB3BB', '未联系': '#D5D8DD', '不来': 'var(--bad)', '不合适': '#C9CCD2', '未回复': '#E4E6EA' };
 const VCLS = { '推荐': 't-ok', '待确认': 't-warn', '不推荐': 't-grey' };
 const tagA = a => `<span class="tag ${ACLS[a] || 't-grey'}"><span class="dot"></span>${esc(a)}</span>`;
 const tagV = v => v ? `<span class="tag ${VCLS[v] || 't-grey'}">AI ${esc(v)}</span>` : '';
@@ -377,7 +377,12 @@ async function vKb(m) {
       <textarea class="inp" data-la="${i}" style="min-height:70px">${esc(t.answer)}</textarea>${t.gaps ? `<div class="small" style="color:var(--warn);margin-top:4px">还缺：${esc(t.gaps)}</div>` : ''}
       <div class="inline-form" style="margin-top:6px"><button class="btn sm pri" data-ladd="${i}">加入知识库</button></div></div>`).join('') + '<button class="btn" id="kb-ladd-all">全部加入为一份文档</button>'
       : '<div class="empty-state">先在智联聊天页插件面板点“采集历史约聊”，把过去的会话导入，再点右上角“从历史约聊学习”。AI 会按薪资、待遇福利、作息时间等主题归纳候选人最关心的问题，并根据你当时的回答整理标准答案。</div>'}
-  </div></div>`;
+  </div></div>
+  <div class="card" style="margin-top:16px"><div class="card-h"><h3>我的沟通话术</h3><span class="sub">${d.playbook?.at ? `从历史约聊学习于 ${esc(d.playbook.at.slice(5, 16))} · ` : ''}AI 自动回复时模仿这里的口吻和推进方式</span></div><div class="card-b">
+    <label class="fi full" style="flex-direction:row;gap:8px;align-items:center;margin-bottom:8px"><input type="checkbox" id="pb-on" style="width:auto" ${d.playbook?.enabled !== false ? 'checked' : ''}>启用</label>
+    <textarea class="inp" id="pb-text" style="min-height:260px;line-height:1.7" placeholder="点“从历史约聊学习”后自动生成，也可以自己写。建议按这些小标题：&#10;【整体风格】&#10;【候选人主动投递·条件合适】&#10;【候选人主动投递·条件不合适】&#10;【我打招呼后对方回复】&#10;【引导约面】&#10;【常用说法】&#10;【避免的说法】">${esc(d.playbook?.text || '')}</textarea>
+    <div class="inline-form"><button class="btn pri" id="pb-save">保存话术</button><span class="small muted">只学说话方式；薪资、福利等事实仍以上面的文档为准。</span></div></div></div>`;
+  $('#pb-save').onclick = async () => { await api('/settings', { method: 'PUT', body: { playbook: { ...(d.playbook || {}), enabled: $('#pb-on').checked, text: $('#pb-text').value.trim() } } }); toast('话术已保存，AI 下一条回复起生效'); };
 
   const upload = async files => {
     const prog = $('#kb-prog'); let ok = 0;
@@ -448,7 +453,8 @@ async function vSettings(m) {
   const [st, ivs] = await Promise.all([api('/settings'), api('/interviewers')]);
   const R = st.rules, SC = st.schedule, AI = st.ai, ORG = st.org, AR = st.autoReply;
   const MODES = { auto: '全自动', semi: '半自动', human: '转人工' };
-  const AR_CATS = { 提问: '学校在哪？上几节课？', 提供信息: '有初中数学教资，2 月能到岗', 约面时间: '明天下午可以去面试', 确认参加: '好的，我会准时到',
+  const AR_CATS = { '投递-符合': '主动投递、初筛符合 → 感谢并邀约初试', '投递-不符合': '主动投递、初筛不符合 → 礼貌婉拒', '投递-待确认': '主动投递、简历信息不全 → 先问关键信息',
+    提问: '学校在哪？上几节课？', 提供信息: '有初中数学教资，2 月能到岗', 约面时间: '明天下午可以去面试', 确认参加: '好的，我会准时到',
     改期: '明天有事，能改个时间吗', 拒绝: '不考虑了，已经找到了', 议价: '工资能保证一万吗', 要求真人: '我想找真人聊', 交换联系方式: '可以加个微信吗', 其他: '其他消息' };
   m.innerHTML = ph('设置', '插件、AI 模型、初筛规则、面试时段、面试官和知识库。修改后点对应区块的“保存”。') + `
   <div class="g3" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr)">
@@ -487,6 +493,7 @@ async function vSettings(m) {
         <label class="fi">最短等待（秒）<input id="ar-d0" type="number" value="${esc(AR.delayMin)}"></label><label class="fi">最长等待（秒）<input id="ar-d1" type="number" value="${esc(AR.delayMax)}"></label>
         <label class="fi">每小时最多自动发送<input id="ar-max" type="number" value="${esc(AR.maxPerHour)}"></label>
         <label class="fi" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" id="ar-scan" style="width:auto" ${AR.scanUnread !== false ? 'checked' : ''}>自动打开有未读消息的会话</label>
+        <label class="fi full" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" id="ar-inv" style="width:auto" ${AR.autoInvite !== false ? 'checked' : ''}>约定面试时间后，自动在平台点「约面试」发送面试邀约（全自动时）</label>
         <label class="fi full">回复风格（让 AI 像真人一样说话）<textarea id="ar-style" style="min-height:70px">${esc(AR.style)}</textarea></label></div>
       <div class="inline-form"><button class="btn pri" id="ar-save">保存</button></div></div></div>
     <div class="card"><div class="card-h"><h3>AI 对候选人的身份</h3></div><div class="card-b"><div class="grid-form">
@@ -531,7 +538,7 @@ async function vSettings(m) {
     const d0 = Math.max(5, +$('#ar-d0').value || 25), d1 = Math.max(d0, +$('#ar-d1').value || 90);
     return { enabled: $('#ar-on').checked, hours: [$('#ar-h0').value || '08:30', $('#ar-h1').value || '21:00'], delayMin: d0, delayMax: d1,
       maxPerHour: Math.max(1, +$('#ar-max').value || 40), scanUnread: $('#ar-scan').checked, policy, style: $('#ar-style').value.trim(),
-      repeatLimit: Math.max(2, +$('#ar-rep').value || 2) };
+      repeatLimit: Math.max(2, +$('#ar-rep').value || 2), autoInvite: $('#ar-inv').checked };
   };
   $('#ar-save').onclick = () => save({ autoReply: arBody() }, $('#ar-on').checked ? '已保存：全自动回复已开启' : '已保存');
   $('#o-save').onclick = () => save({ org: orgBody(), autoReply: arBody() });

@@ -89,7 +89,7 @@ function candOut(c, full = false) {
 }
 const getCand = id => db.prepare('SELECT * FROM candidates WHERE id=?').get(id);
 const settingsAll = () => ({ org: getSetting(db, 'org'), rules: getSetting(db, 'rules'), schedule: getSetting(db, 'schedule'), ai: getSetting(db, 'ai'), kb: getSetting(db, 'kb'),
-  autoReply: getSetting(db, 'autoReply'), kbDoc: getSetting(db, 'kbDoc') || '' });
+  autoReply: getSetting(db, 'autoReply'), kbDoc: getSetting(db, 'kbDoc') || '', playbook: getSetting(db, 'playbook') });
 const hourAgoCN = () => new Date(Date.now() - 3600e3).toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' });
 const autoSentLastHour = () => db.prepare("SELECT COUNT(*) n FROM messages WHERE by='ai-auto' AND at>=?").get(hourAgoCN()).n;
 
@@ -130,7 +130,26 @@ route('POST', '/api/ext/ping', 'ext', async (req, res) => {
   const b = await body(req);
   setSetting(db, 'ext_last', { at: nowCN(), page: clip(b.page, 60), version: clip(b.version, 20) });
   const ar = getSetting(db, 'autoReply');
-  send(res, 200, { ok: true, today: todayCN(), auto: { enabled: !!ar.enabled, hours: ar.hours, scanUnread: ar.scanUnread !== false, sentLastHour: autoSentLastHour(), maxPerHour: ar.maxPerHour } });
+  send(res, 200, { ok: true, today: todayCN(), auto: { enabled: !!ar.enabled, hours: ar.hours, scanUnread: ar.scanUnread !== false, sentLastHour: autoSentLastHour(), maxPerHour: ar.maxPerHour,
+    autoInvite: ar.autoInvite !== false, place: getSetting(db, 'org').place } });
+});
+
+// page-structure reports from the extension (no message content), kept for tuning
+route('POST', '/api/ext/diag', 'ext', async (req, res) => {
+  const b = await body(req);
+  const kind = ['chat', 'invite'].includes(b.kind) ? b.kind : 'chat';
+  const str = JSON.stringify(b.data ?? null);
+  setSetting(db, `diag_${kind}`, { at: nowCN(), data: str.length > 20000 ? { truncated: true, head: str.slice(0, 20000) } : b.data });
+  send(res, 200, { ok: true });
+});
+// result of an automatic interview invitation
+route('POST', '/api/ext/chat/invited', 'ext', async (req, res) => {
+  const b = await body(req);
+  const c = getCand(Number(b.candidateId));
+  if (!c) return fail(res, 404, '候选人不存在');
+  addEvent(db, c.id, b.ok ? `已自动发送平台面试邀约：${clip(b.msg, 60)}` : `自动发面试邀约未成功：${clip(b.msg, 80)}`);
+  if (b.shape) setSetting(db, 'diag_invite', { at: nowCN(), data: b.shape });
+  send(res, 200, { ok: true });
 });
 
 // knowledge-base documents: the extension options page can list them and add text documents
@@ -249,13 +268,20 @@ const tagTopic = (ids, topic) => { const up = db.prepare('UPDATE messages SET to
 route('POST', '/api/ext/chat/suggest', 'ext', async (req, res) => {
   const b = await body(req);
   const platform = b.platform === 'boss' ? 'boss' : 'zhaopin';
-  const c = chatCandidate(platform, b);
+  let c = chatCandidate(platform, b);
+  // resume shown in the chat (candidate applied): screen it with the same rules as the recommend page
+  if (b.profile && typeof b.profile === 'object') {
+    const n = normalizeZhaopin({ ...b.profile, resumeNumber: c.uid, userName: b.profile.userName || b.name });
+    if (n.edu || n.age != null || n.work.length) c = upsertScreened(platform, clip(b.job, 40) || null, n, screen(n, getSetting(db, 'rules')), platform === 'zhaopin' ? '智联 聊天（投递）' : 'BOSS 聊天');
+  }
   storeMessages(c, (b.messages || []).slice(-40));
   if (c.attend === '未联系') db.prepare("UPDATE candidates SET attend='沟通中' WHERE id=?").run(c.id);
   const cx = chatContext(c.id);
   const st = settingsAll();
   const appt = activeAppt(db, c.id);
-  const d = await suggestReply({ ...c, slots: j(c.slots_json, {}) }, cx.history, { settings: st, appt, db, earlierQuestions: cx.earlierQuestions });
+  const origin = ['applied', 'greeted'].includes(b.origin) ? b.origin : 'unknown';
+  const offer = ['am', 'pm'].map(half => findSlot(db, { half })).filter(Boolean);
+  const d = await suggestReply({ ...c, slots: j(c.slots_json, {}) }, cx.history, { settings: st, appt, db, earlierQuestions: cx.earlierQuestions, origin, offer });
   if (d.topic) tagTopic(cx.unansweredIds, d.topic);
   // persist extracted slots (no state change until the staff sends)
   const slots = { ...j(c.slots_json, {}), ...d.slots };
@@ -456,12 +482,12 @@ route('PATCH', '/api/interviewers/:id', 'admin', async (req, res, p) => {
 route('GET', '/api/settings', 'admin', (req, res) => send(res, 200, { ...settingsAll(), extToken: getSetting(db, 'ext_token'), ext: getSetting(db, 'ext_last'), llm: llmConfigured() }));
 route('PUT', '/api/settings', 'admin', async (req, res) => {
   const b = await body(req);
-  for (const k of ['org', 'rules', 'schedule', 'ai', 'kb', 'autoReply']) if (b[k] !== undefined) setSetting(db, k, b[k]);
+  for (const k of ['org', 'rules', 'schedule', 'ai', 'kb', 'autoReply', 'playbook']) if (b[k] !== undefined) setSetting(db, k, b[k]);
   if (typeof b.kbDoc === 'string') setSetting(db, 'kbDoc', clip(b.kbDoc, 20000));
   send(res, 200, settingsAll());
 });
 // knowledge base (documents)
-route('GET', '/api/kb/docs', 'admin', (req, res) => send(res, 200, { docs: docList(), stats: kbStats(db), learned: getSetting(db, 'learned') }));
+route('GET', '/api/kb/docs', 'admin', (req, res) => send(res, 200, { docs: docList(), stats: kbStats(db), learned: getSetting(db, 'learned'), playbook: getSetting(db, 'playbook') }));
 route('GET', '/api/kb/docs/:id', 'admin', (req, res, p) => {
   const d = db.prepare('SELECT * FROM kb_docs WHERE id=?').get(Number(p.id));
   d ? send(res, 200, d) : fail(res, 404, '文档不存在');
@@ -490,9 +516,14 @@ route('POST', '/api/kb/search', 'admin', async (req, res) => {
 });
 route('POST', '/api/kb/learn', 'admin', async (req, res) => {
   const r = await learnFromChats(db, getSetting(db, 'ai'));
-  if (r.ok) setSetting(db, 'learned', r);
+  if (r.ok) {
+    setSetting(db, 'learned', r);
+    // the recruiter's own way of talking → playbook the AI imitates (kept editable)
+    if (r.playbook) setSetting(db, 'playbook', { ...getSetting(db, 'playbook'), text: r.playbook, at: r.at });
+  }
   send(res, 200, r);
 });
+route('GET', '/api/diag', 'admin', (req, res) => send(res, 200, { chat: getSetting(db, 'diag_chat'), invite: getSetting(db, 'diag_invite') }));
 
 route('POST', '/api/settings/rotate-token', 'admin', (req, res) => { const t = randomToken(18); setSetting(db, 'ext_token', t); send(res, 200, { extToken: t }); });
 route('POST', '/api/settings/rescreen', 'admin', (req, res) => {

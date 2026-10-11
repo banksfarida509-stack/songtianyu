@@ -120,5 +120,33 @@ export async function learnFromChats(db, ai) {
     topic: clip(x.topic, 20), count: Number(x.count) || 0, examples: (x.examples || []).slice(0, 4).map(e => clip(e, 60)),
     answer: clip(x.answer, 600), gaps: clip(x.gaps, 200),
   }));
-  return { ok: true, at: nowCN(), model: r.model, conversations: convs, questions: pairs.length, topics };
+  let playbook = '';
+  try { playbook = await learnPlaybook(rows, ai); } catch (e) { console.error('[kb] playbook failed:', clip(e.message, 200)); }
+  return { ok: true, at: nowCN(), model: r.model, conversations: convs, questions: pairs.length, topics, playbook };
+}
+
+/**
+ * The recruiter's own way of talking, from conversations they typed themselves
+ * (by='staff'; AI-sent messages are left out so the AI does not learn from itself).
+ */
+async function learnPlaybook(rows, ai) {
+  const byConv = new Map();
+  for (const m of rows) { if (!byConv.has(m.cid)) byConv.set(m.cid, []); byConv.get(m.cid).push(m); }
+  const convs = [...byConv.values()].filter(ms => ms.some(m => m.dir === 'out' && m.by === 'staff') && ms.some(m => m.dir === 'in')).slice(-40);
+  if (!convs.length) return '';
+  const text = convs.map((ms, i) => {
+    const who = ms[0].dir === 'in' ? '候选人先联系（投递 / 主动发消息）' : '我先打招呼';
+    return `#${i + 1} ${who}\n` + ms.slice(0, 14).map(m => `${m.dir === 'in' ? '候选人' : m.by === 'staff' ? '我' : '我(AI)'}：${clip(m.text, 100)}`).join('\n');
+  }).join('\n\n');
+  const sys = `下面是一位学校招聘负责人和教师岗位候选人的真实聊天。请总结“我”的沟通逻辑和话术，供 AI 以同样的身份和口吻自动回复。按以下小标题输出纯文本（不要 JSON），总长不超过 1200 字，多引用“我”的原话作为示例：
+【整体风格】语气、长短、称呼、常用语气词
+【候选人主动投递·条件合适】怎么开场、怎么介绍、怎么邀约
+【候选人主动投递·条件不合适】怎么礼貌婉拒
+【我打招呼后对方回复】怎么接话、先问什么
+【引导约面】怎么提出面试、怎么给时间选项、对方犹豫时怎么说
+【常用说法】5–10 句原话
+【避免的说法】
+不要编造聊天里没有的事实（薪资数字、福利等）；只总结说话方式。`;
+  const r = await chat(ai, [{ role: 'system', content: sys }, { role: 'user', content: clip(text, 22000) }], { maxTokens: 1600, temperature: 0.3 });
+  return clip(String(r.content || '').trim(), 2400);
 }

@@ -72,7 +72,7 @@ export function decideMode(draft, { autoReply, override, nowHM, sentLastHour }) 
   if (want === 'human') return { mode: 'human', why: `${src}转人工` };
   if (want === 'semi') return { mode: 'semi', why: `${src}半自动` };
   // without the LLM the canned reply cannot answer free questions; only fixed-flow intents may go out alone
-  if (draft.byAi === false && !['约面时间', '确认参加', '改期', '拒绝', '交换联系方式'].includes(draft.intent)) return { mode: 'semi', why: 'AI 暂不可用，规则回复不自动发' };
+  if (draft.byAi === false && !['约面时间', '确认参加', '改期', '拒绝', '交换联系方式', '投递-符合', '投递-不符合', '投递-待确认'].includes(draft.intent)) return { mode: 'semi', why: 'AI 暂不可用，规则回复不自动发' };
   if (!ar.enabled) return { mode: 'semi', why: '全自动总开关未打开' };
   const [h0, h1] = ar.hours || ['00:00', '23:59'];
   if (nowHM < h0 || nowHM > h1) return { mode: 'semi', why: `不在自动回复时段（${h0}–${h1}）` };
@@ -153,6 +153,27 @@ export async function suggestReply(candidate, history, ctx) {
   const passages = ctx.db ? retrieve(ctx.db, query, { topic: guessTopic(query) }) : [];
   const docText = passages.map((p, i) => `[D${i + 1}｜${p.title}] ${p.text}`).join('\n');
   const me = `${org.name || '学校'}的${org.role || '招聘约访官，同时负责初试面试'}${org.agentName ? `（候选人称呼你“${org.agentName}”）` : ''}`;
+  // scenario: who started the chat, is this our first reply, what did screening say
+  const firstReply = !history.some(m => m.dir === 'out');
+  const origin = ctx.origin || 'unknown';
+  const verdict = candidate.verdict || null;
+  const scenario = firstReply && origin === 'applied'
+    ? `投递-${verdict === '推荐' ? '符合' : verdict === '不推荐' ? '不符合' : '待确认'}` : null;
+  const offerTxt = (ctx.offer || []).map(o => `${o.date === tomorrow ? '明天' : o.date.slice(5)}${o.slot < '12:00' ? '上午' : '下午'} ${o.slot}`).join(' 或 ');
+  const pb = settings.playbook?.enabled !== false && settings.playbook?.text ? clip(settings.playbook.text, 1800) : '';
+  const situation = [
+    `来源：${origin === 'applied' ? '候选人主动投递 / 主动发来消息' : origin === 'greeted' ? '我们先打的招呼，对方回复了' : '未知'}`,
+    `初筛结论：${verdict || '未初筛'}${candidate.reason ? `（${clip(candidate.reason, 60)}）` : ''}`,
+    `这是你对这位候选人的第一条回复：${firstReply ? '是' : '否'}`,
+    `可约的最近初试时间：${offerTxt || '暂无空档'}`,
+  ].join('；');
+  const scenarioRule = scenario === '投递-符合'
+    ? '本次场景：候选人主动投递且符合要求。感谢投递，用一句话介绍岗位亮点（只用资料里的事实），然后直接邀约初试，给出上面的时间选项让对方选。'
+    : scenario === '投递-不符合'
+      ? '本次场景：候选人主动投递但不符合要求。礼貌婉拒：感谢关注和投递，说明这个岗位目前和你的情况不太匹配，祝求职顺利；不要说具体原因（尤其不提年龄、性别等），不要邀约，不要留后续承诺。'
+      : scenario === '投递-待确认'
+        ? '本次场景：候选人主动投递，但简历信息不全。感谢投递，问一个最关键的问题（教师资格证 / 学历 / 最早到岗时间之一），表达有意向就安排面试。'
+        : '对方表现出意向（愿意、可以、感兴趣、问面试 / 流程）而还没约时间时，要主动邀约，直接给出上面的时间选项让对方选；对方犹豫时先解答顾虑，再邀约一次。';
   let ai = null, model = null, err = null;
   if (llmConfigured() && settings.ai.enabled) {
     const sys = `你是${me}，在招聘平台上用第一人称直接和应聘教师岗位的候选人聊天：代表学校回答问题、了解对方情况、邀约初试。你就是负责这件事的人，不要说“我帮你问问招聘老师”“我是助手”这类话。
@@ -163,6 +184,9 @@ export async function suggestReply(candidate, history, ctx) {
 5. 不说“保证、一定”等承诺词，不提年龄、性别、婚育、户籍要求。不在消息里写电话、微信号、公众号、链接或 6 位以上数字；交换联系方式由平台按钮完成。
 6. 目标：了解教师资格证、最早到岗时间、可面试时间（上午 9:00–11:00 或下午 13:00–15:00），然后约初试。面试地点统一在${org.place}。
 7. 判断对方这次的问题之前是否已经问过（看聊天记录里对方的旧消息，同一个意思换了说法也算），填 askedBefore。
+8. 当前情况：${situation}
+9. ${scenarioRule}
+${pb ? `10. 下面是这位招聘负责人过去的沟通逻辑和话术，请模仿其口吻、节奏和推进方式（事实仍以学校资料为准）：\n${pb}\n` : ''}
 问答：${kb.map(k => `[${k.id}] ${k.q}：${k.a}`).join(' ')}
 学校资料（与本次问题最相关的段落）：
 ${docText || '（无相关段落）'}
@@ -182,7 +206,9 @@ ${docText || '（无相关段落）'}
       } catch (e) { err = e.message; console.error('[ai] suggest failed:', clip(e.message, 200)); }
     }
   }
-  const intent = INTENTS.includes(ai?.intent) ? ai.intent : fallbackIntent(lastText);
+  let intent = INTENTS.includes(ai?.intent) ? ai.intent : fallbackIntent(lastText);
+  // first reply to an applicant: the screening result decides the category (unless they bargain / ask for a person)
+  if (scenario && !['要求真人', '议价', '交换联系方式', '约面时间'].includes(intent)) intent = scenario;
   const newSlots = {};
   if (ai?.slots) for (const [k, v] of Object.entries(ai.slots)) if (v && v !== 'null') newSlots[k] = String(v);
   if (!ai) { // keyword extraction fallback
@@ -194,7 +220,14 @@ ${docText || '（无相关段落）'}
   let reply = ai?.reply ? String(ai.reply) : '';
   let action = null, slot = null, handoff = false, handoffWhy = null, stateChange = null;
 
-  if (intent === '约面时间' || (intent === '提供信息' && newSlots.half)) {
+  if (intent === '投递-不符合') {
+    reply = reply || pick(['你好，谢谢你的投递和关注。这个岗位目前和你的情况不太匹配，这次先不安排面试了，祝你早日找到合适的工作。', '谢谢你投递我们学校。综合看了下，这个岗位暂时和你的背景不太契合，先不打扰了，祝求职顺利。']);
+    stateChange = { attend: '不合适' };
+  } else if (intent === '投递-符合') {
+    reply = reply || `你好，谢谢投递！你的情况挺合适的，想请你来${org.place}参加初试${offerTxt ? `，${offerTxt}哪个时间方便？` : '，你看哪天上午或下午方便？'}`;
+  } else if (intent === '投递-待确认') {
+    reply = reply || '你好，谢谢投递！想先确认一下，你有教师资格证吗？';
+  } else if (intent === '约面时间' || (intent === '提供信息' && newSlots.half)) {
     const half = newSlots.half && newSlots.half !== 'null' ? newSlots.half : 'any';
     const { findSlot } = await import('./schedule.js');
     slot = ctx.db ? findSlot(ctx.db, { half, fromDate: newSlots.day || null }) : null;
@@ -250,7 +283,7 @@ ${docText || '（无相关段落）'}
   if (!reply) reply = pick(['收到。你这边有教师资格证吗？', '好的。方便说下你有没有教师资格证吗？最快什么时候能到岗？']);
 
   // ---- checks ----
-  const kbText = kb.map(k => k.a).join(' ') + ' ' + docText + ' ' + [...sched.am, ...sched.pm].join(' ') + (slot ? ` ${slot.slot} ${slot.date.slice(5)}` : '') + (appt ? ` ${appt.slot} ${appt.date.slice(5)}` : '');
+  const kbText = kb.map(k => k.a).join(' ') + ' ' + docText + ' ' + (ctx.offer || []).map(o => `${o.date.slice(5)} ${o.slot}`).join(' ') + ' ' + [...sched.am, ...sched.pm].join(' ') + (slot ? ` ${slot.slot} ${slot.date.slice(5)}` : '') + (appt ? ` ${appt.slot} ${appt.date.slice(5)}` : '');
   const allowed = (kbText.match(/\d+(?:[.:：]\d+)?/g) || []).map(n => n.replace('：', ':'));
   const risk = riskCheck(reply);
   const badNums = numbersOutsideKb(reply, allowed);

@@ -112,7 +112,7 @@
     else if (S.confirmCollect) b += `<p class="hra-muted">将依次打开最近的会话，读取聊天记录交给后台，用来整理候选人常问的问题（薪资、待遇、作息等）。只读取，不发送任何消息；有未读消息的会话会跳过，以免被标成已读。</p>
       <div class="hra-row"><label class="hra-muted">最近 <input id="hra-hn" type="number" min="5" max="50" value="30" style="width:56px"> 个会话</label></div>
       <div class="hra-row"><button class="hra-btn pri" data-a="collect-go">开始采集</button><button class="hra-btn" data-a="collect-cancel">取消</button></div>`;
-    else b += `<button class="hra-btn" data-a="collect">采集历史约聊（用于知识库）</button>`;
+    else b += `<div class="hra-row"><button class="hra-btn" data-a="collect">采集历史约聊（学习话术）</button><button class="hra-btn" data-a="diag">复制诊断信息</button></div>`;
     if (S.todo.length) {
       b += `<div class="hra-sub">待你处理（${S.todo.length}）</div><div class="hra-rank">${S.todo.map(t => `<div class="hra-ri" data-open="${esc(t.sessionId)}"><b>${esc(MODE_TXT[t.mode] || '')}</b><span>${esc(t.name)}<i>${esc(t.why)}</i></span><em>${esc(t.at)}</em></div>`).join('')}</div>`;
     }
@@ -149,6 +149,13 @@
     if (a === 'suggest') return suggest(true);
     if (a === 'kb') { chrome.runtime.sendMessage({ type: 'openOptions' }); return; }
     if (a === 'collect') { S.confirmCollect = true; return draw(); }
+    if (a === 'diag') {
+      const r = await callMain('diagnose', {}, 'diagResult');
+      const text = JSON.stringify({ version: VERSION, chat: r.data, inviteShape: S.inviteShape || null }, null, 1);
+      api('/ext/diag', { kind: 'chat', data: JSON.parse(text) });
+      try { await navigator.clipboard.writeText(text); log('诊断信息已复制，可以直接粘贴给技术支持'); } catch { log('诊断信息已上传到后台（复制到剪贴板失败）'); }
+      return;
+    }
     if (a === 'collect-cancel') { S.confirmCollect = false; return draw(); }
     if (a === 'collect-stop') { toMain('historyStop'); return; }
     if (a === 'collect-go') { const n = parseInt(panel.querySelector('#hra-hn')?.value, 10) || 30; S.confirmCollect = false; return collectHistory(Math.max(5, Math.min(50, n))); }
@@ -256,7 +263,7 @@
     const sig = chatSig(c);
     if (!force && (sig === S.lastSuggestSig || !last || last.dir !== 'in')) return draw();
     S.lastSuggestSig = sig; S.busy = true; S.draft = null; S.decision = null; S.pending = null; draw();
-    const r = await api('/ext/chat/suggest', { platform: 'zhaopin', sessionId: c.sessionId, uid: c.uid, name: c.name, job: c.job, messages: c.messages });
+    const r = await api('/ext/chat/suggest', { platform: 'zhaopin', sessionId: c.sessionId, uid: c.uid, name: c.name, job: c.job, origin: c.origin, profile: c.profile, messages: c.messages });
     S.busy = false;
     if (chatSig(S.chat) !== sig) return; // conversation moved on while waiting
     if (r.error) { S.err = r.error; return draw(); }
@@ -291,7 +298,14 @@
     if (!ok) { addTodo('semi', '自动发送失败，请手动发'); return draw(); }
     const r = await api('/ext/chat/applied', { candidateId: S.candidateId, draft: d, auto });
     d.sentAuto = true; doneTodo();
-    if (d.action) addTodo('semi', `已回复，需要你点「${d.action}」${d.slot ? ` ${d.slot.date} ${d.slot.slot}` : ''}`);
+    // time agreed → send the platform's interview invitation automatically
+    if (d.action === '约面试' && d.slot && S.auto?.autoInvite && auto) {
+      await sleep(2000 + Math.random() * 2000);
+      const iv = await callMain('invite', { date: d.slot.date, slot: d.slot.slot, place: S.auto.place || '' }, 'inviteResult', 30000);
+      log(`${S.chat?.name || ''}：${iv.msg}`);
+      api('/ext/chat/invited', { candidateId: S.candidateId, ok: !!iv.ok, msg: iv.msg, shape: iv.shape || null });
+      if (!iv.ok) addTodo('semi', `面试邀约没自动发出：${iv.msg}`);
+    } else if (d.action) addTodo('semi', `已回复，需要你点「${d.action}」${d.slot ? ` ${d.slot.date} ${d.slot.slot}` : ''}`);
     log(`${S.chat?.name || ''}：${auto ? '已全自动回复' : '已发送'}${r.error ? '（写入人才池失败：' + r.error + '）' : ''}`);
     S.handledAt = Date.now();
     if (S.auto) S.auto.sentLastHour = (S.auto.sentLastHour || 0) + (auto ? 1 : 0);
@@ -332,6 +346,7 @@
     const d = e.data;
     if (!d || d.__hra !== 'main' || e.source !== window) return;
     if (d.type === 'recommend') onCards(d.data.cards, d.data.job);
+    if (d.type === 'inviteShape') { S.inviteShape = d.data; api('/ext/diag', { kind: 'invite', data: d.data }); log('已记录你发面试邀约的窗口结构，用于完善自动邀约'); }
     if (d.type === 'historyProgress' && S.collecting) { Object.assign(S.collecting, { done: d.data.done, total: d.data.total, name: d.data.name }); draw(); }
     if (d.type === 'chat' && S.collecting) return;
     if (d.type === 'chat' && S.quietNext && Date.now() - S.quietNext < 6000) {
