@@ -24,8 +24,11 @@
     results: {}, job: '', err: '', risk: false, greeting: false, stop: false, confirmGreet: false, target: 10, done: 0, phase: '', log: [],
     chat: null, draft: null, decision: null, chatMode: null, candidateId: null, busy: false, collapsed: false, lastSuggestSig: '',
     auto: null, autoPaused: false, pending: null, sending: false, todo: [], handledAt: 0, userAt: 0, scanSkip: [],
-    collecting: null, confirmCollect: false, quietNext: 0,
+    collecting: null, confirmCollect: false, quietNext: 0, gap: 3,
   };
+  // pause between two greetings (seconds); the choice is remembered
+  const GAPS = [[3, 5], [5, 7], [7, 10], [10, 15]];
+  try { chrome.storage.local.get('greetGap').then(v => { if (Number.isInteger(v.greetGap)) S.gap = v.greetGap; }); } catch { /* default 10–15 s */ }
   const log = m => { S.log.unshift(`${new Date().toTimeString().slice(0, 8)} ${m}`); S.log = S.log.slice(0, 40); draw(); };
   const MODE_TXT = { auto: '全自动', semi: '半自动', human: '转人工' };
 
@@ -64,8 +67,10 @@
     b += S.greeting
       ? `<p class="hra-muted">正在打招呼：已完成 ${S.done} / ${S.target}${S.phase ? ' · ' + esc(S.phase) : ''}</p><button class="hra-btn" data-a="stop">停止打招呼</button>`
       : S.confirmGreet
-        ? `<p class="hra-muted">按 AI 推荐顺序打招呼，当前页推荐 ${rk.filter(r => !r.greeted).length} 位未打招呼；不够时自动往下加载更多。每位间隔 15–30 秒，会消耗平台打招呼次数。</p>
+        ? `<p class="hra-muted">按 AI 推荐顺序打招呼，当前页推荐 ${rk.filter(r => !r.greeted).length} 位未打招呼；不够时自动往下加载更多。会消耗平台打招呼次数。</p>
            <div class="hra-row"><label class="hra-muted">本次打 <input id="hra-n" type="number" min="1" max="100" value="${S.target || 10}" style="width:56px"> 位</label></div>
+           <div class="hra-muted">每位间隔</div><div class="hra-seg">${GAPS.map(([lo, hi], i) => `<button data-a="gap:${i}" class="${S.gap === i ? 'on' : ''}">${lo}–${hi} 秒</button>`).join('')}</div>
+           ${S.gap === 0 ? '<p class="hra-muted" style="color:#B25E09">间隔越短，越容易触发平台“操作频繁”验证；出现验证会自动停止。</p>' : ''}
            <div class="hra-row"><button class="hra-btn pri" data-a="greet-go">确认开始</button><button class="hra-btn" data-a="greet-cancel">取消</button></div>`
         : `<button class="hra-btn pri" data-a="greet" ${rk.some(r => !r.greeted) && !S.risk ? '' : 'disabled'}>按推荐顺序打招呼</button>`;
     return b;
@@ -130,6 +135,11 @@
     if (a === 'toggle') { S.collapsed = !S.collapsed; return draw(); }
     if (a === 'greet') { S.confirmGreet = true; return draw(); }
     if (a === 'greet-cancel') { S.confirmGreet = false; return draw(); }
+    if (a.startsWith('gap:')) {
+      S.gap = Math.max(0, Math.min(GAPS.length - 1, +a.slice(4)));
+      try { chrome.storage.local.set({ greetGap: S.gap }); } catch { /* remembered for this page only */ }
+      return draw();
+    }
     if (a === 'greet-go') {
       const n = parseInt(panel.querySelector('#hra-n')?.value, 10);
       S.target = Math.max(1, Math.min(100, n || 10));
@@ -220,7 +230,8 @@
       if (S.done >= S.target) break;
       // nothing was sent (already contacted / card gone): move on without the pause
       if (/已沟通过/.test(res.msg) || (!res.ok && !res.unverified)) continue;
-      const wait = 15000 + Math.random() * 15000;
+      const [lo, hi] = GAPS[S.gap] || GAPS[3];
+      const wait = (lo + Math.random() * (hi - lo)) * 1000;
       S.phase = `等待 ${Math.round(wait / 1000)} 秒后继续`; draw();
       for (let t = 0; t < wait && !S.stop && !S.risk; t += 500) await sleep(500);
     }
