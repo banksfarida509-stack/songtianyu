@@ -104,14 +104,18 @@ const ASK_TOPICS = new Set(Object.keys(TOPIC_WORDS));
  * earlier: [{text, topic}] candidate messages before the current unanswered ones.
  */
 export function askCount(current, topic, earlier, askedBefore) {
-  // same topic AND worded alike, or nearly the same words (the model's askedBefore covers rephrasings)
-  const hits = earlier.filter(m => current.some(c => {
+  // Only earlier *questions* count, and they must be worded alike: during booking a
+  // candidate asks many different things about the interview (time, place, what to
+  // bring) — same topic, different questions. Card messages never count.
+  const isQ = t => !/^\[卡片/.test(t) && /[?？吗呢]|怎么|什么|哪|几|多少|是否|能不能|可不可以|有没有/.test(t);
+  const hits = earlier.filter(m => isQ(m.text) && current.some(c => {
     const sim = similar(c, m.text);
-    return sim >= 0.6 || (ASK_TOPICS.has(topic) && m.topic === topic && sim >= 0.3);
+    // interview arrangements naturally share words (时间 / 面试), so that topic needs closer wording
+    return sim >= 0.75 || (ASK_TOPICS.has(topic) && m.topic === topic && sim >= (topic === '面试安排' ? 0.6 : 0.4));
   })).length;
   // the same question sent twice in a row before we answered also counts
-  const inner = current.slice(1).filter(x => similar(x, current[0]) >= 0.6).length;
-  return Math.max(1 + hits + inner, askedBefore ? 2 : 1);
+  const inner = current.slice(1).filter(x => isQ(x) && similar(x, current[0]) >= 0.75).length;
+  return Math.max(1 + hits + inner, askedBefore && current.some(isQ) ? 2 : 1);
 }
 
 // ---- chat suggestion ----

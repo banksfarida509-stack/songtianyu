@@ -32,6 +32,10 @@ test('同一问题第二次问 → 计为第 2 遍', () => {
   assert.equal(askCount(['那工资到底多少钱'], '薪资', earlier, false), 2);
   assert.equal(askCount(['几点下班'], '作息时间', earlier, false), 1);
   assert.equal(askCount(['有没有绩效奖金'], '薪资', earlier, false), 1); // same topic, different question
+  // booking an interview: different questions about the same interview are not repeats
+  const booking = [{ text: '面试是几点？', topic: '面试安排' }, { text: '好的，明天上午可以', topic: '面试安排' }, { text: '面试在哪个校区？', topic: '面试安排' }];
+  assert.equal(askCount(['面试需要带什么材料吗'], '面试安排', booking, false), 1);
+  assert.equal(askCount(['面试到底是几点？'], '面试安排', booking, false), 2);
   assert.equal(askCount(['工资多少', '工资多少啊'], '薪资', [], false), 2);
   assert.equal(askCount(['随便问问'], '其他', [], true), 2);
 });

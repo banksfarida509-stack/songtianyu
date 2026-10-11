@@ -301,7 +301,7 @@
     const byClass = [...document.querySelectorAll('[class*="badge"], [class*="unread"], [class*="count"], [class*="num"], [class*="dot"], sup')]
       .filter(e => visible(e) && /^\d{1,3}\+?$/.test((e.innerText || '').trim()) && e.getBoundingClientRect().left < window.innerWidth * 0.45);
     // class names vary: also look for any small red number in the list area
-    const byLook = [...document.querySelectorAll('span, div, i, em, sup, b')].filter(e => e.children.length === 0 && visible(e) && isRedBadge(e));
+    const byLook = [...document.querySelectorAll('span, div, i, em, sup, b')].filter(e => e.children.length === 0 && /^\d{1,3}\+?$/.test((e.textContent || '').trim()) && visible(e) && isRedBadge(e));
     const badges = [...new Set([...byClass, ...byLook])];
     const rows = [];
     for (const b of badges) {
@@ -405,8 +405,13 @@
   }
 
   // ---------- interview invitation (平台「约面试」) ----------
-  const dialogs = () => [...document.querySelectorAll('.km-modal, .km-dialog, [role="dialog"], .el-dialog, .km-drawer')].filter(visible);
-  const inviteDialog = () => dialogs().find(d => /面试/.test(d.innerText || '')) || null;
+  const dialogs = () => [...document.querySelectorAll('.km-modal, .km-dialog, [role="dialog"], .el-dialog, .km-drawer, [class*="modal"], [class*="dialog"], [class*="drawer"], [class*="popup"], [class*="layer"]')].filter(visible);
+  // the invite form: a visible box that mentions 面试 and holds form fields; the innermost one wins
+  const inviteDialog = () => {
+    const c = dialogs().filter(d => /面试/.test(d.innerText || '') && d.querySelector('input, textarea, [class*="picker"], [class*="select"]'))
+      .map(d => ({ d, a: d.getBoundingClientRect().width * d.getBoundingClientRect().height })).filter(x => x.a > 40000);
+    return c.length ? c.sort((x, y) => x.a - y.a)[0].d : null;
+  };
   const vmsIn = root => { const out = new Set(); for (const el of [root, ...root.querySelectorAll('*')]) if (el.__vue__) out.add(el.__vue__); return [...out]; };
   const vmName = vm => (vm.$options && (vm.$options.name || vm.$options._componentTag)) || '';
   const labelOf = el => {
@@ -430,7 +435,11 @@
     if (!clickByText('约面试')) return post('inviteResult', { reqId, ok: false, msg: '没找到「约面试」按钮' });
     let d = null;
     for (let k = 0; k < 15 && !d; k++) { await wait(300); d = inviteDialog(); }
-    if (!d) return post('inviteResult', { reqId, ok: false, msg: '点了「约面试」，但没弹出邀约窗口' });
+    if (!d) {
+      // record what did show up, for tuning (class names and the first words only)
+      const seen = dialogs().map(x => ({ cls: String(x.className).slice(0, 80), text: (x.innerText || '').replace(/\s+/g, ' ').slice(0, 60) })).slice(0, 8);
+      return post('inviteResult', { reqId, ok: false, msg: '点了「约面试」，但没认出邀约窗口，请你手动发邀约（插件会记下窗口结构）', shape: { seen } });
+    }
     const [h, mi] = String(slot || '09:00').split(':').map(Number);
     const at = new Date(`${date}T00:00:00`); at.setHours(h, mi, 0, 0);
     const filled = [];
@@ -508,7 +517,18 @@
   // The card's action buttons are only rendered while the mouse is over it, so
   // hover first, then look for a visible button by its text.
   const wait = ms => new Promise(r => setTimeout(r, ms));
-  const visible = e => !!(e && e.offsetParent && e.getClientRects().length);
+  // visible on screen. offsetParent alone is null for position:fixed elements
+  // (dialogs, drawers), so check size and computed style instead.
+  const visible = e => {
+    if (!e || !e.getClientRects || !e.getClientRects().length) return false;
+    const r = e.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return false;
+    for (let el = e, k = 0; el && el.nodeType === 1 && k < 12; el = el.parentElement, k++) {
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
+    }
+    return true;
+  };
   const GREET_RE = /^(打招呼|继续沟通|已沟通|立即沟通)$/;
   // Pick the innermost visible element with the label, preferring a real <button>
   // (clicking the wrapper div does not reach the platform's click handler).
