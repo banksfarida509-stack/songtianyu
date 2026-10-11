@@ -231,6 +231,7 @@ route('POST', '/api/ext/reasons', 'ext', async (req, res) => {
 });
 
 // a chat thread snapshot from the platform page; returns an AI draft
+const inflight = new Map();
 function chatCandidate(platform, b) {
   let c = b.uid ? db.prepare('SELECT * FROM candidates WHERE platform=? AND uid=?').get(platform, String(b.uid)) : null;
   if (!c) {
@@ -281,7 +282,13 @@ route('POST', '/api/ext/chat/suggest', 'ext', async (req, res) => {
   const appt = activeAppt(db, c.id);
   const origin = ['applied', 'greeted'].includes(b.origin) ? b.origin : 'unknown';
   const offer = ['am', 'pm'].map(half => findSlot(db, { half })).filter(Boolean);
-  const d = await suggestReply({ ...c, slots: j(c.slots_json, {}) }, cx.history, { settings: st, appt, db, earlierQuestions: cx.earlierQuestions, origin, offer });
+  // the same conversation asked twice at once (double click, two tabs): share one AI call
+  const key = `${c.id}:${cx.history.length}:${cx.history.at(-1)?.text || ''}`;
+  if (!inflight.has(key)) {
+    inflight.set(key, suggestReply({ ...c, slots: j(c.slots_json, {}) }, cx.history, { settings: st, appt, db, earlierQuestions: cx.earlierQuestions, origin, offer })
+      .finally(() => setTimeout(() => inflight.delete(key), 3000)));
+  }
+  const d = await inflight.get(key);
   if (d.topic) tagTopic(cx.unansweredIds, d.topic);
   // persist extracted slots (no state change until the staff sends)
   const slots = { ...j(c.slots_json, {}), ...d.slots };

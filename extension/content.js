@@ -5,6 +5,14 @@
 (() => {
   if (window.__hraIso) return;
   window.__hraIso = true;
+  // After the extension is reloaded without refreshing the page, the old copy keeps
+  // running next to the new one. The newest copy takes over; older ones go quiet.
+  const INSTANCE = `${Date.now()}-${Math.random()}`;
+  document.querySelectorAll('#hra-panel').forEach(p => p.remove());
+  window.postMessage({ __hra: 'takeover', id: INSTANCE }, location.origin);
+  window.addEventListener('message', e => {
+    if (e.source === window && e.data?.__hra === 'takeover' && e.data.id !== INSTANCE) { S.dead = true; S.pending = null; panel.remove(); }
+  });
   const VERSION = chrome.runtime.getManifest().version;
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const api = (path, body) => new Promise(res => chrome.runtime.sendMessage({ type: 'api', path, body }, r => res(r || { error: chrome.runtime.lastError?.message || '插件后台无响应' })));
@@ -43,6 +51,7 @@
     return Object.entries(S.results).map(([uid, r]) => ({ uid, ...r })).filter(r => r.verdict === '推荐').sort((a, b) => b.score - a.score);
   }
   function draw() {
+    if (S.dead) return;
     if (!isRec() && !isIm()) { panel.hidden = true; return; }
     panel.hidden = false;
     const head = `<div class="hra-head"><b>AI 招聘副驾</b><span>${isRec() ? '推荐页 · 初筛' : '聊天页 · 约聊'}</span><button class="hra-x" data-a="toggle">${S.collapsed ? '展开' : '收起'}</button></div>`;
@@ -221,7 +230,7 @@
     const skip = new Set();
     let dry = 0, why = '', fails = 0;
     const onPage = uid => !!document.querySelector(`[data-hra-uid="${CSS.escape(uid)}"]`);
-    while (S.done < S.target && !S.stop && !S.risk) {
+    while (S.done < S.target && !S.stop && !S.risk && !S.dead) {
       const r = rank().find(x => !x.greeted && !skip.has(x.uid) && onPage(x.uid));
       if (!r) {
         if (++dry > 4) { why = '当前岗位已没有更多 AI 推荐的候选人'; break; }
@@ -265,7 +274,12 @@
   function doneTodo() { if (S.chat) S.todo = S.todo.filter(t => t.sessionId !== S.chat.sessionId); }
   function cancelPending(msg) { if (S.pending) { S.pending = null; if (msg) log(msg); } draw(); }
 
+  // one reply generation at a time; a request that arrives meanwhile runs right after
+  let suggestQueued = null;
+  const aiRetries = new Map();
   async function suggest(force = false) {
+    if (S.dead) return;
+    if (S.busy) { suggestQueued = suggestQueued || force; return; }
     const c = S.chat;
     if (!c) return;
     const last = c.messages[c.messages.length - 1];
@@ -274,12 +288,19 @@
     S.lastSuggestSig = sig; S.busy = true; S.draft = null; S.decision = null; S.pending = null; draw();
     const r = await api('/ext/chat/suggest', { platform: 'zhaopin', sessionId: c.sessionId, uid: c.uid, name: c.name, job: c.job, origin: c.origin, profile: c.profile, messages: c.messages });
     S.busy = false;
+    if (suggestQueued !== null) { const f = suggestQueued; suggestQueued = null; if (chatSig(S.chat) !== sig || f) return suggest(f); }
     if (chatSig(S.chat) !== sig) return; // conversation moved on while waiting
     if (r.error) { S.err = r.error; return draw(); }
     S.err = ''; S.draft = r.data.draft; S.decision = r.data.decision; S.chatMode = r.data.chatMode; S.candidateId = r.data.candidateId; S.screen = r.data.screen;
     S.handledAt = Date.now();
     const dc = S.decision || { mode: 'semi', why: '' };
     log(`${c.name}：${S.draft.intent} → ${MODE_TXT[dc.mode]}（${dc.why}）`);
+    // the AI failed for a moment: try again (twice) instead of falling back for good
+    if (S.draft.byAi === false) {
+      const n = (aiRetries.get(sig) || 0) + 1; aiRetries.set(sig, n);
+      log(`AI 生成失败${S.draft.aiError ? '：' + S.draft.aiError : ''}${n <= 2 ? `，${n * 8} 秒后重试` : ''}`);
+      if (n <= 2) { setTimeout(() => { if (chatSig(S.chat) === sig && !S.sending) suggest(true); }, n * 8000); }
+    }
     if (dc.mode === 'auto' && S.auto?.enabled && !S.autoPaused && !S.risk) {
       S.pending = { sig, due: Date.now() + (dc.delayMs || 30000) };
       const mine = S.pending;
@@ -292,6 +313,7 @@
   }
 
   async function sendDraft(auto) {
+    if (S.dead) return;
     const d = S.draft, sig = S.lastSuggestSig;
     if (!d || d.blocked || S.sending) return;
     if (auto && (chatSig(S.chat) !== sig || S.autoPaused || S.risk)) return log('会话有变化，取消自动发送');
@@ -339,6 +361,7 @@
 
   // full-auto patrol: open the next conversation with unread messages when idle
   async function patrol() {
+    if (S.dead) return;
     const A = S.auto;
     if (!isIm() || !A?.enabled || A.scanUnread === false || S.autoPaused || S.risk || S.busy || S.pending || S.sending || S.collecting) return;
     if (Date.now() - S.userAt < 45000) return;                 // the recruiter is using the page

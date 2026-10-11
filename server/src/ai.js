@@ -153,8 +153,11 @@ export async function suggestReply(candidate, history, ctx) {
   const passages = ctx.db ? retrieve(ctx.db, query, { topic: guessTopic(query) }) : [];
   const docText = passages.map((p, i) => `[D${i + 1}｜${p.title}] ${p.text}`).join('\n');
   const me = `${org.name || '学校'}的${org.role || '招聘约访官，同时负责初试面试'}${org.agentName ? `（候选人称呼你“${org.agentName}”）` : ''}`;
-  // scenario: who started the chat, is this our first reply, what did screening say
-  const firstReply = !history.some(m => m.dir === 'out');
+  // scenario: who started the chat, is this our first reply, what did screening say.
+  // The platform may send an automatic greeting before the candidate's application,
+  // so "first reply" = nothing sent by us after the candidate's first message.
+  const firstIn = history.findIndex(m => m.dir === 'in');
+  const firstReply = firstIn >= 0 && !history.slice(firstIn + 1).some(m => m.dir === 'out');
   const origin = ctx.origin || 'unknown';
   const verdict = candidate.verdict || null;
   const scenario = firstReply && origin === 'applied'
@@ -208,7 +211,7 @@ ${docText || '（无相关段落）'}
     const swapped = { ...settings.ai, provider: settings.ai.fallbackProvider, model: settings.ai.fallbackModel, fallbackProvider: settings.ai.provider, fallbackModel: settings.ai.model };
     for (const cfg of [settings.ai, swapped]) {
       try {
-        const r = await chat(cfg, msgs, { maxTokens: 400, temperature: 0.6 });
+        const r = await chat(cfg, msgs, { maxTokens: 900, temperature: 0.6 });
         ai = parseJson(r.content); model = r.model; err = null;
         if (ai && typeof ai.reply === 'string') break;
       } catch (e) { err = e.message; console.error('[ai] suggest failed:', clip(e.message, 200)); }
@@ -304,7 +307,7 @@ ${docText || '（无相关段落）'}
 
   reply = clip(reply, 200);
   return {
-    intent, topic, asked, reply, parts: splitHuman(reply), slots: newSlots, action, slot, byAi: !!ai,
+    intent, topic, asked, reply, parts: splitHuman(reply), slots: newSlots, action, slot, byAi: !!ai, aiError: ai ? null : clip(err || '', 160),
     sources: passages.map(p => ({ title: p.title, text: clip(p.text, 80) })),
     checks: { guard: guardHits, platform: risk.platform }, blocked,
     handoff, handoffWhy, stateChange, model: model || (err ? `规则回退（${clip(err, 80)}）` : '规则回退（未配置 AI）'),

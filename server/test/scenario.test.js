@@ -42,6 +42,12 @@ test('主动投递 + 信息不全 → 先问资格证', async () => {
   assert.match(d.reply, /资格证/);
 });
 
+test('平台自动招呼语在前、候选人发附件简历 → 仍按投递处理', async () => {
+  const h = [{ dir: 'out', text: '您好，感谢关注，欢迎投递简历' }, { dir: 'in', text: '[卡片·附件简历] 这是我的附件简历，请查收' }];
+  const d = await suggestReply({ verdict: '推荐', slots: {} }, h, { settings, db, origin: 'applied', offer });
+  assert.equal(d.intent, '投递-符合');
+});
+
 test('我们先打招呼的会话不走投递场景', async () => {
   const d = await suggestReply({ verdict: '推荐', slots: {} }, [{ dir: 'out', text: '你好，看到你在找数学老师的工作' }, { dir: 'in', text: '你好，学校在哪？' }], { settings, db, origin: 'greeted', offer });
   assert.ok(!String(d.intent).startsWith('投递'));

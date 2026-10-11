@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI 招聘副驾",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "在招聘平台页面内读取简历做 AI 初筛、批量打招呼，约聊消息按分类全自动回复或给出建议（全自动需在后台开启）。",
   "permissions": ["storage"],
   "host_permissions": ["https://rd6.zhaopin.com/*", "http://*/*", "https://*/*"],

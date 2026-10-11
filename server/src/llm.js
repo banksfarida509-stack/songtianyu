@@ -56,10 +56,20 @@ async function callOnce(provider, model, messages, { maxTokens = 600, temperatur
 }
 
 /** Chat with fallback provider. Throws if both fail. */
+// one quick retry for rate limits / gateway hiccups (several replies can be generated at once)
+async function callRetry(provider, model, messages, opts) {
+  try { return await callOnce(provider, model, messages, opts); }
+  catch (e) {
+    if (!/HTTP (429|5\d\d)|fetch failed|ECONNRESET|socket/i.test(e.message)) throw e;
+    await new Promise(r => setTimeout(r, 1500 + Math.random() * 1500));
+    return callOnce(provider, model, messages, opts);
+  }
+}
+
 export async function chat(ai, messages, opts) {
   if (!ai.enabled) throw new Error('AI disabled in settings');
   if (!llmConfigured()) throw new Error('LLM not configured');
-  try { return await callOnce(ai.provider, ai.model, messages, opts); }
+  try { return await callRetry(ai.provider, ai.model, messages, opts); }
   catch (e1) {
     if (!ai.fallbackProvider) throw e1;
     try { return await callOnce(ai.fallbackProvider, ai.fallbackModel, messages, opts); }
