@@ -84,6 +84,11 @@
     if (!c) b += '<p class="hra-muted">打开一个会话，插件会读取最新消息，分类后按设置自动回复或给出建议。</p>';
     else {
       b += `<div class="hra-sub">${esc(c.name)} · ${esc(c.job || '')}</div>`;
+      const sc = S.screen;
+      if (sc && S.candidateId) {
+        const cls = sc.verdict === '推荐' ? 'ok' : sc.verdict === '不推荐' ? 'no' : 'warn';
+        b += `<div class="hra-muted"><span class="hra-tag ${cls}">初筛 ${esc(sc.verdict || '未知')}${sc.verdict === '推荐' ? ' ' + sc.score : ''}</span> ${esc({ applied: '主动投递', greeted: '我方打招呼', unknown: '' }[sc.origin] || '')}${sc.hasResume ? '' : ' · 未读到简历'}<br>${esc(sc.reason || '')}</div>`;
+      }
       if (S.candidateId) {
         b += `<div class="hra-seg" title="只对这个会话生效">${[[null, '按分类'], ['semi', '半自动'], ['auto', '全自动'], ['human', '转人工']].map(([v, t]) => `<button data-a="mode:${v ?? ''}" class="${(S.chatMode ?? null) === v ? 'on' : ''}">${t}</button>`).join('')}</div>`;
       }
@@ -253,6 +258,10 @@
     const c = S.chat; if (!c) return;
     S.todo = [{ sessionId: c.sessionId, name: c.name, mode, why, at: new Date().toTimeString().slice(0, 5) }, ...S.todo.filter(t => t.sessionId !== c.sessionId)].slice(0, 30);
   }
+  function addTodoFor(sessionId, why) {
+    const name = (why.match(/「(.+?)」/) || [])[1] || '';
+    S.todo = [{ sessionId, name, mode: 'human', why: '插件打不开这个会话，请手动点开', at: new Date().toTimeString().slice(0, 5) }, ...S.todo.filter(t => t.sessionId !== sessionId)].slice(0, 30);
+  }
   function doneTodo() { if (S.chat) S.todo = S.todo.filter(t => t.sessionId !== S.chat.sessionId); }
   function cancelPending(msg) { if (S.pending) { S.pending = null; if (msg) log(msg); } draw(); }
 
@@ -267,7 +276,7 @@
     S.busy = false;
     if (chatSig(S.chat) !== sig) return; // conversation moved on while waiting
     if (r.error) { S.err = r.error; return draw(); }
-    S.err = ''; S.draft = r.data.draft; S.decision = r.data.decision; S.chatMode = r.data.chatMode; S.candidateId = r.data.candidateId;
+    S.err = ''; S.draft = r.data.draft; S.decision = r.data.decision; S.chatMode = r.data.chatMode; S.candidateId = r.data.candidateId; S.screen = r.data.screen;
     S.handledAt = Date.now();
     const dc = S.decision || { mode: 'semi', why: '' };
     log(`${c.name}：${S.draft.intent} → ${MODE_TXT[dc.mode]}（${dc.why}）`);
@@ -335,9 +344,13 @@
     if (Date.now() - S.userAt < 45000) return;                 // the recruiter is using the page
     const waitingOnYou = S.draft && !S.draft.sentAuto && S.decision?.mode !== 'auto';
     if (Date.now() - S.handledAt < (waitingOnYou ? 180000 : 8000)) return; // give a semi draft 3 min before moving on
-    const r = await callMain('nextUnread', { skip: S.scanSkip }, 'openResult');
+    const r = await callMain('nextUnread', { skip: S.scanSkip }, 'openResult', 30000);
     if (r.ok) log(r.msg);
-    else if (!r.none && /没找到/.test(r.msg)) log(r.msg);
+    else if (r.failed && r.id) {
+      // could not switch to it: skip for 10 minutes instead of retrying every 15 s
+      S.scanSkip.push(r.id); setTimeout(() => { S.scanSkip = S.scanSkip.filter(x => x !== r.id); }, 600000);
+      addTodoFor(r.id, r.msg); log(r.msg);
+    } else if (!r.none && /没找到/.test(r.msg)) log(r.msg);
   }
   ['mousedown', 'keydown', 'wheel'].forEach(t => document.addEventListener(t, e => { if (e.isTrusted && !panel.contains(e.target)) S.userAt = Date.now(); }, true));
 
@@ -360,7 +373,7 @@
         S.pending = null;
       }
       S.chat = d.data;
-      if (changed) { S.draft = null; S.decision = null; S.chatMode = null; S.candidateId = null; }
+      if (changed) { S.draft = null; S.decision = null; S.chatMode = null; S.candidateId = null; S.screen = null; }
       suggest(false);
     }
     if (d.type === 'actionResult') log(d.data.msg);

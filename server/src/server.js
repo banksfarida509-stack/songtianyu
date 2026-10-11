@@ -287,7 +287,9 @@ route('POST', '/api/ext/chat/suggest', 'ext', async (req, res) => {
   const slots = { ...j(c.slots_json, {}), ...d.slots };
   db.prepare('UPDATE candidates SET slots_json=?, updated_at=? WHERE id=?').run(s(slots), nowCN(), c.id);
   const decision = decideMode(d, { autoReply: st.autoReply, override: c.chat_mode || null, nowHM: nowCN().slice(11, 16), sentLastHour: autoSentLastHour() });
-  send(res, 200, { candidateId: c.id, draft: d, decision, chatMode: c.chat_mode || null, attend: getCand(c.id).attend });
+  const now = getCand(c.id);
+  send(res, 200, { candidateId: c.id, draft: d, decision, chatMode: c.chat_mode || null, attend: now.attend,
+    screen: { verdict: now.verdict, score: now.score, reason: now.reason, origin, hasResume: !!b.profile } });
 });
 
 // staff confirmed (sent) a draft in the platform → apply its state change

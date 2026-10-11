@@ -156,6 +156,14 @@
   }
   const unreadOf = s => { for (const [k, v] of Object.entries(s || {})) if (/unread/i.test(k) && typeof v === 'number') return v; return 0; };
   const sessId = s => s && (s.sessionId || s.id || s.sessionID);
+  // the active id may be formatted differently from the list's id (prefixes), so compare loosely
+  function isActive(st, s) {
+    const a = String(st.activeSessionId || ''), id = String(sessId(s) || '');
+    if (!a || !id) return false;
+    if (a === id || a.endsWith(id) || id.endsWith(a)) return true;
+    const cur = st.currentSession;
+    return !!(cur && ((sessId(cur) && String(sessId(cur)) === id) || (s.name && cur.name === s.name && cur.jobTitle === s.jobTitle)));
+  }
   function sessionEl(sess) {
     const id = sessId(sess);
     // prefer the Vue component that owns this session
@@ -173,21 +181,59 @@
     });
     return rows.sort((a, b) => b.getBoundingClientRect().height - a.getBoundingClientRect().height)[0] || null;
   }
-  function openSession(id, reqId) {
+  // Switch to a conversation and verify it really became the active one. Several
+  // ways are tried in turn (row click, name click, the row component's own click
+  // handler, the store's "switch session" action); the one that works is reused.
+  const SAFE_ACTION = /(active|current|select|switch|open|enter|change)_?session/i;
+  const UNSAFE = /delete|remove|top|mute|clear|read|hide|block|close|del/i;
+  let openHow = null;
+  function openWays(sess) {
+    const id = sessId(sess), ways = [];
+    const el = sessionEl(sess);
+    if (el) {
+      ways.push(['点会话行', () => realClick(el)]);
+      const nm = (sess.name || '').trim();
+      const nameEl = nm && [...el.querySelectorAll('*')].find(e => e.children.length === 0 && (e.innerText || '').trim() === nm);
+      if (nameEl) ways.push(['点姓名', () => realClick(nameEl)]);
+      for (let vm = el.__vue__, k = 0; vm && k < 3; vm = vm.$parent, k++) {
+        for (const m of Object.keys(vm.$options?.methods || {})) {
+          if (/click|select|choose|open|switch|change|enter/i.test(m) && !UNSAFE.test(m)) ways.push([`组件方法 ${vmName(vm)}.${m}`, () => vm[m](sess)]);
+        }
+      }
+    }
+    const store = rootVm()?.$store;
+    for (const a of Object.keys(store?._actions || {})) {
+      if (SAFE_ACTION.test(a.replace(/\//g, '_')) && !UNSAFE.test(a)) { ways.push([`store.dispatch ${a}(id)`, () => store.dispatch(a, id)]); ways.push([`store.dispatch ${a}(session)`, () => store.dispatch(a, sess)]); }
+    }
+    if (openHow) ways.sort((x, y) => (y[0] === openHow) - (x[0] === openHow));
+    return ways;
+  }
+  async function activate(st, sess) {
+    if (isActive(st, sess)) return { ok: true, how: '已在会话' };
+    const ways = openWays(sess);
+    for (const [how, fn] of ways) {
+      try { const r = fn(); if (r && r.catch) r.catch(() => {}); } catch { continue; }
+      for (let k = 0; k < 8; k++) {
+        await wait(250);
+        if (isActive(st, sess)) { openHow = how; return { ok: true, how }; }
+      }
+    }
+    return { ok: false, tried: ways.map(w => w[0]) };
+  }
+  async function openSession(id, reqId) {
     const st = rootVm()?.$store?.state?.im;
     const sess = (st?.sessions || []).find(s => sessId(s) === id);
     if (!sess) return post('openResult', { reqId, ok: false, msg: '没找到这个会话' });
-    const el = sessionEl(sess);
-    if (!el) return post('openResult', { reqId, ok: false, msg: `会话列表里没找到「${sess.name || ''}」` });
-    realClick(el);
-    post('openResult', { reqId, ok: true, msg: `打开会话：${sess.name || ''}` });
+    const r = await activate(st, sess);
+    if (r.ok) return post('openResult', { reqId, ok: true, how: r.how, msg: `打开会话：${sess.name || ''}（${r.how}）` });
+    post('openResult', { reqId, ok: false, failed: true, id, msg: `打不开会话「${sess.name || ''}」，已跳过（试过：${r.tried.join('、') || '没找到会话行'}）` });
   }
   // next conversation where the candidate wrote last and we have not answered
   function nextUnread(reqId, skip) {
     const st = rootVm()?.$store?.state?.im;
     if (!st) return post('openResult', { reqId, ok: false, msg: '未读到会话列表' });
     if ((chatInput()?.value || '').trim()) return post('openResult', { reqId, ok: false, msg: '输入框有内容，暂不切换会话' });
-    const cand = (st.sessions || []).filter(s => sessId(s) !== st.activeSessionId && unreadOf(s) > 0 && !(skip || []).includes(sessId(s)));
+    const cand = (st.sessions || []).filter(s => !isActive(st, s) && unreadOf(s) > 0 && !(skip || []).includes(sessId(s)));
     if (!cand.length) return post('openResult', { reqId, ok: false, none: true, msg: '没有未读会话' });
     openSession(sessId(cand[0]), reqId);
   }
@@ -207,13 +253,12 @@
     for (let i = 0; i < list.length && collecting; i++) {
       const s = list[i], id = sessId(s);
       let msgs = msgsOf(st, id);
-      if (!msgs.length || st.activeSessionId !== id) {
-        const el = sessionEl(s);
-        if (!el) { skipped++; continue; }
-        realClick(el);
-        for (let k = 0; k < 16; k++) { await wait(300); if (st.activeSessionId === id && msgsOf(st, id).length) break; }
+      if (!msgs.length || !isActive(st, s)) {
+        const r = await activate(st, s);
+        if (!r.ok) { skipped++; continue; }
+        for (let k = 0; k < 12; k++) { if (msgsOf(st, st.activeSessionId).length) break; await wait(300); }
         await wait(500 + Math.random() * 800);
-        msgs = msgsOf(st, id);
+        msgs = msgsOf(st, st.activeSessionId);
       }
       const cur = st.currentSession && sessId(st.currentSession) === id ? st.currentSession : s;
       if (msgs.length) out.push({ sessionId: id, uid: cur.resumeNumber || s.resumeNumber || '', name: cur.name || s.name || '', job: cur.jobTitle || s.jobTitle || '', messages: msgs });
@@ -307,7 +352,12 @@
     return {
       url: location.pathname, session: shape(sess), messageTypes: [...new Set(tl.map(m => `${m.type}/${m.flow}`))],
       firstMessage: tl[0] ? { type: tl[0].type, flow: tl[0].flow, keys: Object.keys(tl[0]).slice(0, 30) } : null,
-      resumeFound: !!resumeFor(sess || {}), quickButtons: [...document.querySelectorAll('button, .km-button')].filter(visible).map(b => (b.innerText || '').trim()).filter(t => t && t.length < 8).slice(0, 30),
+      resumeFound: !!resumeFor(sess || {}), openHow,
+      sessionActions: Object.keys(rootVm()?.$store?._actions || {}).filter(a => /session/i.test(a)).slice(0, 40),
+      sessionMutations: Object.keys(rootVm()?.$store?._mutations || {}).filter(a => /session/i.test(a)).slice(0, 40),
+      unreadKeys: Object.keys((st?.sessions || [])[0] || {}).filter(k => /unread|read/i.test(k)),
+      sessionRow: (() => { const s0 = (st?.sessions || [])[0]; const el = s0 && sessionEl(s0); return el ? { tag: el.tagName, cls: String(el.className).slice(0, 80), vm: el.__vue__ ? vmName(el.__vue__) : '', methods: Object.keys(el.__vue__?.$options?.methods || {}).slice(0, 20) } : null; })(),
+      quickButtons: [...document.querySelectorAll('button, .km-button')].filter(visible).map(b => (b.innerText || '').trim()).filter(t => t && t.length < 8).slice(0, 30),
     };
   }
 

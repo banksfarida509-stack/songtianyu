@@ -22,12 +22,18 @@ test('主动投递 + 不符合 → 婉拒，标记不合适，可全自动', asy
   assert.equal(decideMode(d, { autoReply: AR, nowHM: '10:00', sentLastHour: 0 }).mode, 'auto');
 });
 
-test('主动投递 + 符合 → 邀约并给出可约时间，数字检查通过', async () => {
+test('主动投递 + 符合 → 先寒暄、问在职情况，不急着约时间', async () => {
   const d = await suggestReply({ verdict: '推荐', slots: {} }, ask, { settings, db, origin: 'applied', offer });
   assert.equal(d.intent, '投递-符合');
-  assert.match(d.reply, /初试/);
-  assert.match(d.reply, /09:30/);
+  assert.match(d.reply, /在职/);
+  assert.doesNotMatch(d.reply, /09:30/);
   assert.equal(d.blocked, false, JSON.stringify(d.checks));
+});
+
+test('无 AI 时也能记下在职情况和住处', async () => {
+  const d = await suggestReply({ verdict: '推荐', slots: {} }, [{ dir: 'out', text: '你现在在职吗？' }, { dir: 'in', text: '已经离职了，住在铁西区附近' }], { settings, db, origin: 'applied', offer });
+  assert.equal(d.slots.employed, '离职');
+  assert.equal(d.slots.live, '铁西区');
 });
 
 test('主动投递 + 信息不全 → 先问资格证', async () => {

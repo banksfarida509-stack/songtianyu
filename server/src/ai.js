@@ -167,13 +167,21 @@ export async function suggestReply(candidate, history, ctx) {
     `这是你对这位候选人的第一条回复：${firstReply ? '是' : '否'}`,
     `可约的最近初试时间：${offerTxt || '暂无空档'}`,
   ].join('；');
+  // what we still want to know before inviting, in this order; skip what is already known
+  const known = candidate.slots || {};
+  const toAsk = [['employed', '现在是在职还是已经离职'], ['live', '现在住在哪里 / 来学校方不方便'], ['cert', '有没有教师资格证'], ['arrive', '最快什么时候能到岗']]
+    .filter(([k]) => !known[k]).map(([, q]) => q);
+  const rounds = history.filter(m => m.dir === 'out').length;
+  const pace = `沟通节奏：先寒暄、了解情况，再介绍和邀约。还没了解的：${toAsk.join('、') || '（都已了解）'}。每条消息最多问一个问题，已经知道的不要再问。对方提出问题时先认真回答，再顺带问下一个。`
+    + `已经聊了 ${rounds} 轮；当对方表现出意向，或已经了解了在职情况和住处（或已聊到第 3 轮以上）时，就主动邀约初试，给出上面的时间选项。`;
   const scenarioRule = scenario === '投递-符合'
-    ? '本次场景：候选人主动投递且符合要求。感谢投递，用一句话介绍岗位亮点（只用资料里的事实），然后直接邀约初试，给出上面的时间选项让对方选。'
+    ? `本次场景：候选人主动投递且符合要求，这是第一条回复。先感谢投递、简单寒暄，说一句简历挺合适，然后问一个问题了解情况（优先问“${toAsk[0] || '最快什么时候能到岗'}”）。这一条先不要急着约时间。${pace}`
+    : verdict === '推荐' ? `这位候选人初筛符合要求。${pace}`
     : scenario === '投递-不符合'
       ? '本次场景：候选人主动投递但不符合要求。礼貌婉拒：感谢关注和投递，说明这个岗位目前和你的情况不太匹配，祝求职顺利；不要说具体原因（尤其不提年龄、性别等），不要邀约，不要留后续承诺。'
       : scenario === '投递-待确认'
         ? '本次场景：候选人主动投递，但简历信息不全。感谢投递，问一个最关键的问题（教师资格证 / 学历 / 最早到岗时间之一），表达有意向就安排面试。'
-        : '对方表现出意向（愿意、可以、感兴趣、问面试 / 流程）而还没约时间时，要主动邀约，直接给出上面的时间选项让对方选；对方犹豫时先解答顾虑，再邀约一次。';
+        : `对方表现出意向（愿意、可以、感兴趣、问面试 / 流程）而还没约时间时，要主动邀约，直接给出上面的时间选项让对方选；对方犹豫时先解答顾虑，再邀约一次。${pace}`;
   let ai = null, model = null, err = null;
   if (llmConfigured() && settings.ai.enabled) {
     const sys = `你是${me}，在招聘平台上用第一人称直接和应聘教师岗位的候选人聊天：代表学校回答问题、了解对方情况、邀约初试。你就是负责这件事的人，不要说“我帮你问问招聘老师”“我是助手”这类话。
@@ -192,7 +200,7 @@ ${pb ? `10. 下面是这位招聘负责人过去的沟通逻辑和话术，请�
 ${docText || '（无相关段落）'}
 今天是 ${todayCN()}，明天是 ${tomorrow}。
 已知信息：${JSON.stringify(slots)}；当前面试安排：${appt ? `${appt.date} ${appt.slot}（${appt.status}）` : '无'}。
-只输出 JSON：{"intent":"${INTENTS.join('|')}","topic":"${TOPICS.join('|')}","askedBefore":false,"unknown":false,"slots":{"cert":"有/没有/在考/null","arrive":"到岗时间或null","day":"YYYY-MM-DD 或 null","half":"am/pm/any/null"},"reply":"给候选人的回复","kb":["引用的编号，如 KB-01、D2"]}
+只输出 JSON：{"intent":"${INTENTS.join('|')}","topic":"${TOPICS.join('|')}","askedBefore":false,"unknown":false,"slots":{"employed":"在职/离职/应届/null","live":"住处或null","cert":"有/没有/在考/null","arrive":"到岗时间或null","day":"YYYY-MM-DD 或 null","half":"am/pm/any/null"},"reply":"给候选人的回复","kb":["引用的编号，如 KB-01、D2"]}
 说明：intent 里“议价”只指讨价还价（能不能再高点、能保证一万吗）；单纯问工资多少、有没有五险一金、几点下班属于“提问”。`;
     const msgs = [{ role: 'system', content: sys }];
     for (const m of history.slice(-12)) msgs.push({ role: m.dir === 'in' ? 'user' : 'assistant', content: clip(m.text, 300) });
@@ -215,6 +223,9 @@ ${docText || '（无相关段落）'}
     if (/有.*资格证|资格证.*有/.test(lastText)) newSlots.cert = '有';
     if (/上午/.test(lastText)) newSlots.half = 'am'; else if (/下午/.test(lastText)) newSlots.half = 'pm';
     if (/明天/.test(lastText)) newSlots.day = tomorrow;
+    if (/离职|辞职|没上班|待业/.test(lastText)) newSlots.employed = '离职'; else if (/在职|还在上班|在上班/.test(lastText)) newSlots.employed = '在职'; else if (/应届|刚毕业|在读/.test(lastText)) newSlots.employed = '应届';
+    const live = lastText.match(/住(?:在)?([一-龥]{2,10}?)(?:[，。,.!！]|$|附近|那边|这边)/);
+    if (live) newSlots.live = live[1];
   }
 
   let reply = ai?.reply ? String(ai.reply) : '';
@@ -224,7 +235,7 @@ ${docText || '（无相关段落）'}
     reply = reply || pick(['你好，谢谢你的投递和关注。这个岗位目前和你的情况不太匹配，这次先不安排面试了，祝你早日找到合适的工作。', '谢谢你投递我们学校。综合看了下，这个岗位暂时和你的背景不太契合，先不打扰了，祝求职顺利。']);
     stateChange = { attend: '不合适' };
   } else if (intent === '投递-符合') {
-    reply = reply || `你好，谢谢投递！你的情况挺合适的，想请你来${org.place}参加初试${offerTxt ? `，${offerTxt}哪个时间方便？` : '，你看哪天上午或下午方便？'}`;
+    reply = reply || pick([`你好，谢谢投递！简历我看了，挺合适的。想先了解下，你现在是在职还是已经离职了？`, `你好呀，收到你的简历了，背景挺符合我们要求的。方便说下你现在是在职状态吗？`]);
   } else if (intent === '投递-待确认') {
     reply = reply || '你好，谢谢投递！想先确认一下，你有教师资格证吗？';
   } else if (intent === '约面时间' || (intent === '提供信息' && newSlots.half)) {
