@@ -74,6 +74,21 @@ export const DEFAULT_SETTINGS = {
     provider: 'deepseek', model: 'deepseek-chat',
     fallbackProvider: 'bigmodel', fallbackModel: 'glm-4-flash',
   },
+  // 约聊回复方式：候选人每条消息先被 AI 分类，再按分类决定 全自动 / 半自动 / 转人工
+  autoReply: {
+    enabled: false,               // 全自动总开关（关 = 所有分类都只给建议）
+    hours: ['08:30', '21:00'],    // 只在这个时间段内自动发送
+    delayMin: 25, delayMax: 90,   // 收到消息后等待多少秒再回（像真人）
+    maxPerHour: 40,               // 每小时最多自动发送条数
+    scanUnread: true,             // 自动打开有未读消息的会话
+    policy: {
+      提问: 'auto', 提供信息: 'auto', 约面时间: 'auto', 确认参加: 'auto', 改期: 'auto',
+      拒绝: 'auto', 议价: 'human', 要求真人: 'human', 交换联系方式: 'semi', 其他: 'semi',
+    },
+    style: '像学校招聘老师在手机上回消息：口语、简短、自然，一次只问一个问题；先回答对方的问题，再顺带推进；不用“您好！感谢您的…”这类客服腔，不用表情符号，不说“亲”。',
+  },
+  // 知识库（整段粘贴，AI 回复只能用这里和下面问答里的事实）
+  kbDoc: '',
   kb: [
     { id: 'KB-01', q: '面试流程', a: '初试是试讲 15 分钟加面谈 20 分钟，请带身份证和教师资格证原件。' },
     { id: 'KB-02', q: '面试地点', a: '面试统一在学校本部，到了跟前台报名字即可。' },
@@ -88,6 +103,9 @@ export function openDb(file) {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000;');
   db.exec(SCHEMA);
+  // migrations: per-conversation reply mode override (null = 按分类)
+  const cols = db.prepare('PRAGMA table_info(candidates)').all().map(c => c.name);
+  if (!cols.includes('chat_mode')) db.exec('ALTER TABLE candidates ADD COLUMN chat_mode TEXT');
   // defaults
   const get = db.prepare('SELECT value FROM settings WHERE key=?');
   const put = db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)');
@@ -106,7 +124,12 @@ export function getSetting(db, key) {
   const row = db.prepare('SELECT value FROM settings WHERE key=?').get(key);
   const v = row ? j(row.value) : null;
   const d = DEFAULT_SETTINGS[key];
-  if (d && v && typeof d === 'object' && !Array.isArray(d)) return { ...d, ...v };
+  if (d && v && typeof d === 'object' && !Array.isArray(d)) {
+    const out = { ...d, ...v };
+    // one level deeper for nested maps (e.g. autoReply.policy) so new defaults show up
+    for (const [k, dv] of Object.entries(d)) if (dv && typeof dv === 'object' && !Array.isArray(dv) && v[k] && typeof v[k] === 'object') out[k] = { ...dv, ...v[k] };
+    return out;
+  }
   return v ?? d ?? null;
 }
 

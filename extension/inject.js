@@ -89,6 +89,72 @@
     ta.focus();
     post('actionResult', { ok: true, msg: '已填入输入框，请检查后点“发送”' });
   }
+  // ---------- full-auto helpers ----------
+  const chatInput = () => document.querySelector('textarea.km-input__original[placeholder*="对话"]') || document.querySelector('.im-sender textarea, textarea.km-input__original');
+  function sendBtn(ta) {
+    for (let box = ta, k = 0; box && k < 8; box = box.parentElement, k++) {
+      const b = [...box.querySelectorAll('button, .km-button, [class*="send"]')].find(e => visible(e) && /^发\s*送$/.test((e.innerText || '').trim()));
+      if (b) return b;
+    }
+    return [...document.querySelectorAll('button, .km-button')].find(e => visible(e) && /^发\s*送$/.test((e.innerText || '').trim())) || null;
+  }
+  // fill and send one bubble; types it in a few chunks so the page sees input events like a person
+  async function sendText(text, reqId) {
+    const ta = chatInput();
+    if (!ta) return post('sendResult', { reqId, ok: false, msg: '没找到聊天输入框' });
+    if (ta.value.trim()) return post('sendResult', { reqId, ok: false, msg: '输入框里有你正在写的内容，已跳过自动发送' });
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    ta.focus();
+    const step = Math.max(4, Math.ceil(text.length / 4));
+    for (let i = step; i < text.length + step; i += step) {
+      setter.call(ta, text.slice(0, i)); ta.dispatchEvent(new Event('input', { bubbles: true }));
+      await wait(250 + Math.random() * 400);
+    }
+    await wait(300 + Math.random() * 500);
+    const b = sendBtn(ta);
+    if (b) realClick(b);
+    else for (const t of ['keydown', 'keypress', 'keyup']) ta.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+    for (let k = 0; k < 10; k++) { await wait(300); if (!ta.value.trim()) return post('sendResult', { reqId, ok: true, msg: '已发送' }); }
+    post('sendResult', { reqId, ok: false, msg: '点了发送，但输入框没清空，可能被平台拦截，请看一下页面' });
+  }
+  const unreadOf = s => { for (const [k, v] of Object.entries(s || {})) if (/unread/i.test(k) && typeof v === 'number') return v; return 0; };
+  const sessId = s => s && (s.sessionId || s.id || s.sessionID);
+  function sessionEl(sess) {
+    const id = sessId(sess);
+    // prefer the Vue component that owns this session
+    for (const el of document.querySelectorAll('li, [class*="session"], [class*="conversation"], [class*="item"]')) {
+      const vm = el.__vue__;
+      if (vm && visible(el) && vm.$props && Object.values(vm.$props).some(p => p && typeof p === 'object' && sessId(p) === id)) return el;
+    }
+    // fall back to the list row whose text contains the name, in the left part of the screen
+    const name = sess.name || sess.userName || '';
+    if (!name) return null;
+    const rows = [...document.querySelectorAll('li, [class*="session"], [class*="item"]')].filter(e => {
+      if (!visible(e) || !(e.innerText || '').includes(name)) return false;
+      const r = e.getBoundingClientRect();
+      return r.left < window.innerWidth * 0.45 && r.height > 30 && r.height < 140;
+    });
+    return rows.sort((a, b) => b.getBoundingClientRect().height - a.getBoundingClientRect().height)[0] || null;
+  }
+  function openSession(id, reqId) {
+    const st = rootVm()?.$store?.state?.im;
+    const sess = (st?.sessions || []).find(s => sessId(s) === id);
+    if (!sess) return post('openResult', { reqId, ok: false, msg: '没找到这个会话' });
+    const el = sessionEl(sess);
+    if (!el) return post('openResult', { reqId, ok: false, msg: `会话列表里没找到「${sess.name || ''}」` });
+    realClick(el);
+    post('openResult', { reqId, ok: true, msg: `打开会话：${sess.name || ''}` });
+  }
+  // next conversation where the candidate wrote last and we have not answered
+  function nextUnread(reqId, skip) {
+    const st = rootVm()?.$store?.state?.im;
+    if (!st) return post('openResult', { reqId, ok: false, msg: '未读到会话列表' });
+    if ((chatInput()?.value || '').trim()) return post('openResult', { reqId, ok: false, msg: '输入框有内容，暂不切换会话' });
+    const cand = (st.sessions || []).filter(s => sessId(s) !== st.activeSessionId && unreadOf(s) > 0 && !(skip || []).includes(sessId(s)));
+    if (!cand.length) return post('openResult', { reqId, ok: false, none: true, msg: '没有未读会话' });
+    openSession(sessId(cand[0]), reqId);
+  }
+
   function clickNative(name) {
     const b = [...document.querySelectorAll('button, div, span')].find(e => e.offsetParent && e.children.length <= 2 && (e.innerText || '').trim() === name);
     if (!b) return post('actionResult', { ok: false, msg: `没找到“${name}”按钮` });
@@ -179,6 +245,9 @@
     if (d.type === 'fill') fill(d.text);
     if (d.type === 'native') clickNative(d.name);
     if (d.type === 'greet') greet(d.uid);
+    if (d.type === 'send') sendText(String(d.text || ''), d.reqId);
+    if (d.type === 'open') openSession(d.id, d.reqId);
+    if (d.type === 'nextUnread') nextUnread(d.reqId, d.skip);
     if (d.type === 'more') {
       // load the next batch of recommend cards (infinite scroll)
       clickStay();

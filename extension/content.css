@@ -26,6 +26,21 @@
 #hra-panel .hra-ck{font-size:12px}
 #hra-panel .hra-ck.ok{color:#0E8A5F} #hra-panel .hra-ck.bad{color:#C4313B}
 #hra-panel .hra-act{border:1px dashed #D0161F;color:#D0161F;border-radius:7px;padding:5px 8px;font-size:12px}
+#hra-panel .hra-btn.sm{padding:2px 8px;font-size:12px}
+#hra-panel .hra-auto{display:flex;flex-wrap:wrap;align-items:center;gap:6px;background:#F5F6F8;border-radius:8px;padding:6px 8px;font-size:12px}
+#hra-panel .hra-auto.on{background:#E7F6EF}
+#hra-panel .hra-auto.on b{color:#0E8A5F}
+#hra-panel .hra-auto i{font-style:normal;color:#7A808A;flex-basis:100%;font-size:11.5px}
+#hra-panel .hra-seg{display:flex;border:1px solid #E6E8EC;border-radius:7px;overflow:hidden}
+#hra-panel .hra-seg button{flex:1;border:0;background:#fff;padding:4px 0;font-size:12px;cursor:pointer;color:#41464F}
+#hra-panel .hra-seg button+button{border-left:1px solid #E6E8EC}
+#hra-panel .hra-seg button.on{background:#D0161F;color:#fff}
+#hra-panel .hra-mode{display:inline-block;border-radius:5px;padding:0 6px;font-size:12px;background:#FDF2E3;color:#B25E09}
+#hra-panel .hra-mode.auto{background:#E7F6EF;color:#0E8A5F} #hra-panel .hra-mode.human{background:#FCEBEC;color:#C4313B}
+#hra-panel .hra-draft hr{border:0;border-top:1px dashed #EBD38A;margin:6px 0}
+#hra-panel .hra-cd{background:#E7F6EF;color:#0E8A5F;border-radius:8px;padding:6px 8px;font-size:12.5px}
+#hra-panel .hra-cd b{font-size:15px}
+#hra-panel .hra-ok{color:#0E8A5F;margin:0;font-size:12.5px}
 #hra-panel .hra-log{font-size:11.5px;color:#7A808A}
 #hra-panel .hra-log summary{cursor:pointer}
 .hra-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;padding-top:8px;border-top:1px dashed #E1E5EC;font:12.5px/1.5 "PingFang SC","Microsoft YaHei",sans-serif;color:#41464F;grid-column:1/-1;width:100%}

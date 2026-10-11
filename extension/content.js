@@ -1,5 +1,7 @@
 // Isolated-world content script: talks to the backend (through background.js),
 // draws the AI line under each recommend card and the copilot panel.
+// Chat page: every candidate message is classified by the backend, which then
+// decides 全自动 / 半自动 / 转人工 (see decideMode in server/src/ai.js).
 (() => {
   if (window.__hraIso) return;
   window.__hraIso = true;
@@ -8,9 +10,23 @@
   const api = (path, body) => new Promise(res => chrome.runtime.sendMessage({ type: 'api', path, body }, r => res(r || { error: chrome.runtime.lastError?.message || '插件后台无响应' })));
   const toMain = (type, data = {}) => window.postMessage({ __hra: 'iso', type, ...data }, location.origin);
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  let reqSeq = 0;
+  // ask the MAIN-world script to do something and wait for its answer
+  const callMain = (type, data, resultType, timeout = 15000) => new Promise(ok => {
+    const reqId = `${Date.now()}-${++reqSeq}`;
+    const h = e => { const d = e.data; if (d?.__hra === 'main' && d.type === resultType && d.data?.reqId === reqId) { window.removeEventListener('message', h); ok(d.data); } };
+    window.addEventListener('message', h);
+    toMain(type, { ...data, reqId });
+    setTimeout(() => { window.removeEventListener('message', h); ok({ ok: false, msg: '超时' }); }, timeout);
+  });
 
-  const S = { results: {}, job: '', err: '', risk: false, greeting: false, stop: false, confirmGreet: false, target: 10, done: 0, phase: '', log: [], chat: null, draft: null, candidateId: null, busy: false, collapsed: false, lastSuggestSig: '' };
-  const log = m => { S.log.unshift(`${new Date().toTimeString().slice(0, 8)} ${m}`); S.log = S.log.slice(0, 30); draw(); };
+  const S = {
+    results: {}, job: '', err: '', risk: false, greeting: false, stop: false, confirmGreet: false, target: 10, done: 0, phase: '', log: [],
+    chat: null, draft: null, decision: null, chatMode: null, candidateId: null, busy: false, collapsed: false, lastSuggestSig: '',
+    auto: null, autoPaused: false, pending: null, sending: false, todo: [], handledAt: 0, userAt: 0, scanSkip: [],
+  };
+  const log = m => { S.log.unshift(`${new Date().toTimeString().slice(0, 8)} ${m}`); S.log = S.log.slice(0, 40); draw(); };
+  const MODE_TXT = { auto: '全自动', semi: '半自动', human: '转人工' };
 
   // ---------- panel ----------
   const panel = document.createElement('div');
@@ -30,51 +46,76 @@
     let body = '';
     if (S.err) body += `<div class="hra-err">${esc(S.err)}</div>`;
     if (S.risk) body += `<div class="hra-err">检测到平台风控提示（验证 / 操作频繁），已停止所有自动动作，请人工处理。</div>`;
-    if (isRec()) {
-      const all = Object.values(S.results);
-      const n = v => all.filter(r => r.verdict === v).length;
-      const rk = rank();
-      body += `<div class="hra-stats"><div><b>${all.length}</b>已初筛</div><div><b>${n('推荐')}</b>推荐</div><div><b>${n('待确认')}</b>待确认</div><div><b>${n('不推荐')}</b>不推荐</div></div>`;
-      body += `<div class="hra-sub">推荐顺序（${esc(S.job || '当前岗位')}）</div><div class="hra-rank">${rk.length ? rk.slice(0, 12).map(r => `<div class="hra-ri" data-uid="${esc(r.uid)}"><b>${r.score}</b><span>${esc(r.name || '')}<i>${esc(r.reason || '')}</i></span><em>${r.greeted ? '已打招呼' : ''}</em></div>`).join('') : '<p class="hra-muted">暂无推荐的人。滚动页面加载更多，插件会自动读取。</p>'}</div>`;
-      body += S.greeting
-        ? `<p class="hra-muted">正在打招呼：已完成 ${S.done} / ${S.target}${S.phase ? ' · ' + esc(S.phase) : ''}</p><button class="hra-btn" data-a="stop">停止打招呼</button>`
-        : S.confirmGreet
-          ? `<p class="hra-muted">按 AI 推荐顺序打招呼，当前页推荐 ${rk.filter(r => !r.greeted).length} 位未打招呼；不够时自动往下加载更多。每位间隔 15–30 秒，会消耗平台打招呼次数。</p>
-             <div class="hra-row"><label class="hra-muted">本次打 <input id="hra-n" type="number" min="1" max="100" value="${S.target || 10}" style="width:56px"> 位</label></div>
-             <div class="hra-row"><button class="hra-btn pri" data-a="greet-go">确认开始</button><button class="hra-btn" data-a="greet-cancel">取消</button></div>`
-          : `<button class="hra-btn pri" data-a="greet" ${rk.some(r => !r.greeted) && !S.risk ? '' : 'disabled'}>按推荐顺序打招呼</button>`;
-    }
-    if (isIm()) {
-      const c = S.chat;
-      if (!c) body += '<p class="hra-muted">打开一个会话，插件会读取最新消息并生成回复建议。</p>';
+    if (isRec()) body += drawRec();
+    if (isIm()) body += drawIm();
+    body += `<details class="hra-log"><summary>动作日志</summary>${S.log.map(l => `<div>${esc(l)}</div>`).join('') || '<div>无</div>'}</details>`;
+    const open = panel.querySelector('.hra-log')?.open;
+    panel.innerHTML = head + `<div class="hra-body">${body}</div>`;
+    if (open) panel.querySelector('.hra-log').open = true;
+    bind();
+  }
+  function drawRec() {
+    const all = Object.values(S.results);
+    const n = v => all.filter(r => r.verdict === v).length;
+    const rk = rank();
+    let b = `<div class="hra-stats"><div><b>${all.length}</b>已初筛</div><div><b>${n('推荐')}</b>推荐</div><div><b>${n('待确认')}</b>待确认</div><div><b>${n('不推荐')}</b>不推荐</div></div>`;
+    b += `<div class="hra-sub">推荐顺序（${esc(S.job || '当前岗位')}）</div><div class="hra-rank">${rk.length ? rk.slice(0, 12).map(r => `<div class="hra-ri" data-uid="${esc(r.uid)}"><b>${r.score}</b><span>${esc(r.name || '')}<i>${esc(r.reason || '')}</i></span><em>${r.greeted ? '已打招呼' : ''}</em></div>`).join('') : '<p class="hra-muted">暂无推荐的人。滚动页面加载更多，插件会自动读取。</p>'}</div>`;
+    b += S.greeting
+      ? `<p class="hra-muted">正在打招呼：已完成 ${S.done} / ${S.target}${S.phase ? ' · ' + esc(S.phase) : ''}</p><button class="hra-btn" data-a="stop">停止打招呼</button>`
+      : S.confirmGreet
+        ? `<p class="hra-muted">按 AI 推荐顺序打招呼，当前页推荐 ${rk.filter(r => !r.greeted).length} 位未打招呼；不够时自动往下加载更多。每位间隔 15–30 秒，会消耗平台打招呼次数。</p>
+           <div class="hra-row"><label class="hra-muted">本次打 <input id="hra-n" type="number" min="1" max="100" value="${S.target || 10}" style="width:56px"> 位</label></div>
+           <div class="hra-row"><button class="hra-btn pri" data-a="greet-go">确认开始</button><button class="hra-btn" data-a="greet-cancel">取消</button></div>`
+        : `<button class="hra-btn pri" data-a="greet" ${rk.some(r => !r.greeted) && !S.risk ? '' : 'disabled'}>按推荐顺序打招呼</button>`;
+    return b;
+  }
+  function drawIm() {
+    const A = S.auto;
+    let b = `<div class="hra-auto ${A?.enabled && !S.autoPaused ? 'on' : ''}"><span>全自动回复：<b>${!A ? '读取中' : !A.enabled ? '未开启' : S.autoPaused ? '已暂停' : '运行中'}</b></span>
+      ${A?.enabled ? `<button class="hra-btn sm" data-a="pause">${S.autoPaused ? '恢复' : '暂停'}</button>` : ''}
+      <i>${A ? `本小时自动发送 ${A.sentLastHour || 0}/${A.maxPerHour || 0}` : ''}${A && !A.enabled ? ' · 在后台“设置 → 约聊回复方式”里打开' : ''} · <a href="#" data-a="kb">编辑知识库</a></i></div>`;
+    const c = S.chat;
+    if (!c) b += '<p class="hra-muted">打开一个会话，插件会读取最新消息，分类后按设置自动回复或给出建议。</p>';
+    else {
+      b += `<div class="hra-sub">${esc(c.name)} · ${esc(c.job || '')}</div>`;
+      if (S.candidateId) {
+        b += `<div class="hra-seg" title="只对这个会话生效">${[[null, '按分类'], ['semi', '半自动'], ['auto', '全自动'], ['human', '转人工']].map(([v, t]) => `<button data-a="mode:${v ?? ''}" class="${(S.chatMode ?? null) === v ? 'on' : ''}">${t}</button>`).join('')}</div>`;
+      }
+      const d = S.draft, dc = S.decision;
+      if (S.busy) b += '<p class="hra-muted">AI 正在分类并生成回复…</p>';
+      else if (!d) b += `<p class="hra-muted">${c.messages.length && c.messages[c.messages.length - 1].dir === 'in' ? '' : '等候选人回复。'}</p><button class="hra-btn" data-a="suggest">生成回复建议</button>`;
       else {
-        body += `<div class="hra-sub">${esc(c.name)} · ${esc(c.job || '')}</div>`;
-        const d = S.draft;
-        if (S.busy) body += '<p class="hra-muted">AI 正在生成回复建议…</p>';
-        else if (!d) body += `<p class="hra-muted">${c.messages.length && c.messages[c.messages.length - 1].dir === 'in' ? '' : '等候选人回复。'}</p><button class="hra-btn" data-a="suggest">生成回复建议</button>`;
+        const ck = (ok, t) => `<div class="hra-ck ${ok ? 'ok' : 'bad'}">${ok ? '通过' : '命中'} · ${esc(t)}</div>`;
+        b += `<div class="hra-muted">分类：<b>${esc(d.intent)}</b> → <span class="hra-mode ${dc?.mode || ''}">${esc(MODE_TXT[dc?.mode] || '半自动')}</span> ${esc(dc?.why || '')}</div>`;
+        b += `<div class="hra-draft ${d.blocked ? 'bad' : ''}">${(d.parts || [d.reply]).map(esc).join('<hr>')}</div>`;
+        b += ck(!d.checks.guard.length, '我方护栏' + (d.checks.guard.length ? '：' + d.checks.guard.join('、') : '')) + ck(!d.checks.platform.length, '平台拦截规则' + (d.checks.platform.length ? '：' + d.checks.platform.join('、') : ''));
+        if (d.handoff) b += `<div class="hra-err">转人工：${esc(d.handoffWhy || '')}</div>`;
+        if (d.action) b += `<div class="hra-act">需要在平台点「${esc(d.action)}」${d.slot ? `：${esc(d.slot.date)} ${esc(d.slot.slot)}` : ''}</div>`;
+        if (d.sentAuto) b += `<p class="hra-ok">已自动发送 ✓</p>`;
+        else if (S.pending) b += `<div class="hra-cd">将在 <b id="hra-cd">${Math.max(0, Math.ceil((S.pending.due - Date.now()) / 1000))}</b> 秒后自动发送</div><div class="hra-row"><button class="hra-btn pri" data-a="send-now">立即发送</button><button class="hra-btn" data-a="cancel-auto">取消，我来处理</button></div>`;
+        else if (S.sending) b += '<p class="hra-muted">正在发送…</p>';
         else {
-          const ck = (ok, t) => `<div class="hra-ck ${ok ? 'ok' : 'bad'}">${ok ? '通过' : '命中'} · ${esc(t)}</div>`;
-          body += `<div class="hra-muted">意图：${esc(d.intent)}</div><div class="hra-draft ${d.blocked ? 'bad' : ''}">${esc(d.reply)}</div>
-            ${ck(!d.checks.guard.length, '我方护栏' + (d.checks.guard.length ? '：' + d.checks.guard.join('、') : ''))}${ck(!d.checks.platform.length, '平台拦截规则' + (d.checks.platform.length ? '：' + d.checks.platform.join('、') : ''))}
-            ${d.handoff ? `<div class="hra-err">转人工：${esc(d.handoffWhy || '')}</div>` : ''}
-            ${d.action ? `<div class="hra-act">建议在平台点「${esc(d.action)}」${d.slot ? `：${esc(d.slot.date)} ${esc(d.slot.slot)}` : ''}</div>` : ''}
-            <div class="hra-row">${d.blocked ? '' : '<button class="hra-btn pri" data-a="fill">填入输入框</button>'}${d.action ? `<button class="hra-btn" data-a="native">点「${esc(d.action)}」</button>` : ''}</div>
-            <div class="hra-row"><button class="hra-btn" data-a="applied">我已发送</button><button class="hra-btn" data-a="suggest">重新生成</button></div>
-            <p class="hra-muted">发送仍由你在平台点击“发送”完成；点“我已发送”后，约聊结果写入人才池。</p>`;
+          b += `<div class="hra-row">${d.blocked ? '' : '<button class="hra-btn pri" data-a="send-now">直接发送</button><button class="hra-btn" data-a="fill">填入输入框</button>'}${d.action ? `<button class="hra-btn" data-a="native">点「${esc(d.action)}」</button>` : ''}</div>
+            <div class="hra-row"><button class="hra-btn" data-a="applied">我已发送</button><button class="hra-btn" data-a="suggest">重新生成</button><button class="hra-btn" data-a="skip">不回复</button></div>`;
         }
       }
     }
-    body += `<details class="hra-log"><summary>动作日志</summary>${S.log.map(l => `<div>${esc(l)}</div>`).join('') || '<div>无</div>'}</details>`;
-    panel.innerHTML = head + `<div class="hra-body">${body}</div>`;
-    bind();
+    if (S.todo.length) {
+      b += `<div class="hra-sub">待你处理（${S.todo.length}）</div><div class="hra-rank">${S.todo.map(t => `<div class="hra-ri" data-open="${esc(t.sessionId)}"><b>${esc(MODE_TXT[t.mode] || '')}</b><span>${esc(t.name)}<i>${esc(t.why)}</i></span><em>${esc(t.at)}</em></div>`).join('')}</div>`;
+    }
+    return b;
   }
   function bind() {
-    panel.querySelectorAll('[data-a]').forEach(b => b.onclick = () => act(b.dataset.a));
+    panel.querySelectorAll('[data-a]').forEach(b => b.onclick = e => { e.preventDefault(); act(b.dataset.a); });
     const nIn = panel.querySelector('#hra-n');
     if (nIn) nIn.oninput = () => { S.target = parseInt(nIn.value, 10) || S.target; };
-    panel.querySelectorAll('.hra-ri').forEach(el => el.onclick = () => {
+    panel.querySelectorAll('.hra-ri[data-uid]').forEach(el => el.onclick = () => {
       const card = document.querySelector(`[data-hra-uid="${CSS.escape(el.dataset.uid)}"]`);
       card && card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+    panel.querySelectorAll('.hra-ri[data-open]').forEach(el => el.onclick = async () => {
+      const r = await callMain('open', { id: el.dataset.open }, 'openResult');
+      if (!r.ok) log(r.msg);
     });
   }
   async function act(a) {
@@ -88,12 +129,24 @@
     }
     if (a === 'stop') { S.stop = true; return; }
     if (a === 'suggest') return suggest(true);
+    if (a === 'kb') { chrome.runtime.sendMessage({ type: 'openOptions' }); return; }
+    if (a === 'pause') { S.autoPaused = !S.autoPaused; if (S.autoPaused) cancelPending('已暂停全自动'); log(S.autoPaused ? '本页已暂停全自动回复' : '本页已恢复全自动回复'); return; }
+    if (a.startsWith('mode:') && S.candidateId) {
+      const mode = a.slice(5) || null;
+      const r = await api('/ext/chat/mode', { candidateId: S.candidateId, mode });
+      if (r.error) return log('设置失败：' + r.error);
+      S.chatMode = mode; log(`本会话改为：${mode ? MODE_TXT[mode] : '按分类'}`);
+      return suggest(true);
+    }
     if (a === 'fill' && S.draft) { toMain('fill', { text: S.draft.reply }); return; }
     if (a === 'native' && S.draft?.action) { toMain('native', { name: S.draft.action }); return; }
+    if (a === 'send-now' && S.draft) { S.pending = null; return sendDraft(false); }
+    if (a === 'cancel-auto') { cancelPending('已取消自动发送，改为你来处理'); addTodo('semi', '你取消了自动发送'); return; }
+    if (a === 'skip') { doneTodo(); S.draft = null; S.handledAt = Date.now(); log('本条不回复'); return draw(); }
     if (a === 'applied' && S.draft && S.candidateId) {
       const r = await api('/ext/chat/applied', { candidateId: S.candidateId, draft: S.draft });
       log(r.error ? '写入失败：' + r.error : `已写入人才池：${r.data.candidate.attend}`);
-      S.draft = null; draw();
+      doneTodo(); S.draft = null; S.handledAt = Date.now(); draw();
     }
   }
 
@@ -164,38 +217,108 @@
     draw();
   }
 
-  // ---------- chat: suggestion ----------
+  // ---------- chat: classify → 全自动 / 半自动 / 转人工 ----------
+  const chatSig = c => c ? c.sessionId + ':' + (c.messages.length ? c.messages[c.messages.length - 1].id : '') : '';
+  function addTodo(mode, why) {
+    const c = S.chat; if (!c) return;
+    S.todo = [{ sessionId: c.sessionId, name: c.name, mode, why, at: new Date().toTimeString().slice(0, 5) }, ...S.todo.filter(t => t.sessionId !== c.sessionId)].slice(0, 30);
+  }
+  function doneTodo() { if (S.chat) S.todo = S.todo.filter(t => t.sessionId !== S.chat.sessionId); }
+  function cancelPending(msg) { if (S.pending) { S.pending = null; if (msg) log(msg); } draw(); }
+
   async function suggest(force = false) {
     const c = S.chat;
     if (!c) return;
     const last = c.messages[c.messages.length - 1];
-    const sig = c.sessionId + ':' + (last ? last.id : '');
+    const sig = chatSig(c);
     if (!force && (sig === S.lastSuggestSig || !last || last.dir !== 'in')) return draw();
-    S.lastSuggestSig = sig; S.busy = true; S.draft = null; draw();
+    S.lastSuggestSig = sig; S.busy = true; S.draft = null; S.decision = null; S.pending = null; draw();
     const r = await api('/ext/chat/suggest', { platform: 'zhaopin', sessionId: c.sessionId, uid: c.uid, name: c.name, job: c.job, messages: c.messages });
     S.busy = false;
+    if (chatSig(S.chat) !== sig) return; // conversation moved on while waiting
     if (r.error) { S.err = r.error; return draw(); }
-    S.err = ''; S.draft = r.data.draft; S.candidateId = r.data.candidateId;
-    log(`${c.name}：AI 建议（${r.data.draft.intent}）`);
+    S.err = ''; S.draft = r.data.draft; S.decision = r.data.decision; S.chatMode = r.data.chatMode; S.candidateId = r.data.candidateId;
+    S.handledAt = Date.now();
+    const dc = S.decision || { mode: 'semi', why: '' };
+    log(`${c.name}：${S.draft.intent} → ${MODE_TXT[dc.mode]}（${dc.why}）`);
+    if (dc.mode === 'auto' && S.auto?.enabled && !S.autoPaused && !S.risk) {
+      S.pending = { sig, due: Date.now() + (dc.delayMs || 30000) };
+      const mine = S.pending;
+      setTimeout(() => { if (S.pending === mine) { S.pending = null; sendDraft(true); } }, dc.delayMs || 30000);
+    } else if (dc.mode === 'human') {
+      addTodo('human', dc.why);
+      api('/ext/chat/applied', { candidateId: S.candidateId, draft: { intent: S.draft.intent, handoff: true, handoffWhy: dc.why } });
+    } else addTodo('semi', `${S.draft.intent}：${dc.why}`);
     draw();
   }
+
+  async function sendDraft(auto) {
+    const d = S.draft, sig = S.lastSuggestSig;
+    if (!d || d.blocked || S.sending) return;
+    if (auto && (chatSig(S.chat) !== sig || S.autoPaused || S.risk)) return log('会话有变化，取消自动发送');
+    S.sending = true; draw();
+    const parts = d.parts && d.parts.length ? d.parts : [d.reply];
+    let ok = true;
+    for (let i = 0; i < parts.length; i++) {
+      if (i) await sleep(1500 + Math.random() * 2500);
+      const r = await callMain('send', { text: parts[i] }, 'sendResult', 30000);
+      if (!r.ok) { ok = false; log(`${S.chat?.name || ''}：发送失败（${r.msg}）`); break; }
+    }
+    S.sending = false;
+    if (!ok) { addTodo('semi', '自动发送失败，请手动发'); return draw(); }
+    const r = await api('/ext/chat/applied', { candidateId: S.candidateId, draft: d, auto });
+    d.sentAuto = true; doneTodo();
+    if (d.action) addTodo('semi', `已回复，需要你点「${d.action}」${d.slot ? ` ${d.slot.date} ${d.slot.slot}` : ''}`);
+    log(`${S.chat?.name || ''}：${auto ? '已全自动回复' : '已发送'}${r.error ? '（写入人才池失败：' + r.error + '）' : ''}`);
+    S.handledAt = Date.now();
+    if (S.auto) S.auto.sentLastHour = (S.auto.sentLastHour || 0) + (auto ? 1 : 0);
+    draw();
+  }
+
+  // full-auto patrol: open the next conversation with unread messages when idle
+  async function patrol() {
+    const A = S.auto;
+    if (!isIm() || !A?.enabled || A.scanUnread === false || S.autoPaused || S.risk || S.busy || S.pending || S.sending) return;
+    if (Date.now() - S.userAt < 45000) return;                 // the recruiter is using the page
+    const waitingOnYou = S.draft && !S.draft.sentAuto && S.decision?.mode !== 'auto';
+    if (Date.now() - S.handledAt < (waitingOnYou ? 180000 : 8000)) return; // give a semi draft 3 min before moving on
+    const r = await callMain('nextUnread', { skip: S.scanSkip }, 'openResult');
+    if (r.ok) log(r.msg);
+    else if (!r.none && /没找到/.test(r.msg)) log(r.msg);
+  }
+  ['mousedown', 'keydown', 'wheel'].forEach(t => document.addEventListener(t, e => { if (e.isTrusted && !panel.contains(e.target)) S.userAt = Date.now(); }, true));
 
   // ---------- messages from MAIN world ----------
   window.addEventListener('message', e => {
     const d = e.data;
     if (!d || d.__hra !== 'main' || e.source !== window) return;
     if (d.type === 'recommend') onCards(d.data.cards, d.data.job);
-    if (d.type === 'chat') { const changed = !S.chat || S.chat.sessionId !== d.data.sessionId; S.chat = d.data; if (changed) S.draft = null; suggest(false); }
+    if (d.type === 'chat') {
+      const changed = !S.chat || S.chat.sessionId !== d.data.sessionId;
+      if (S.pending && chatSig(d.data) !== S.pending.sig) {
+        if (changed) addTodo('semi', '自动回复被打断（切换了会话）');
+        S.pending = null;
+      }
+      S.chat = d.data;
+      if (changed) { S.draft = null; S.decision = null; S.chatMode = null; S.candidateId = null; }
+      suggest(false);
+    }
     if (d.type === 'actionResult') log(d.data.msg);
-    if (d.type === 'risk' && !S.risk) { S.risk = true; S.stop = true; log('检测到平台风控提示，已停止'); draw(); }
+    if (d.type === 'risk' && !S.risk) { S.risk = true; S.stop = true; S.pending = null; log('检测到平台风控提示，已停止'); draw(); }
     if (d.type === 'error') console.debug('[hra]', d.data.msg);
   });
 
-  // keep lines alive when the page re-renders; heartbeat
+  // keep lines alive when the page re-renders; countdown; heartbeat
   setInterval(() => { if (isRec()) paintLines(); }, 2000);
+  setInterval(() => { const el = panel.querySelector('#hra-cd'); if (el && S.pending) el.textContent = Math.max(0, Math.ceil((S.pending.due - Date.now()) / 1000)); }, 1000);
+  setInterval(patrol, 15000);
   let lastPath = location.pathname;
-  setInterval(() => { if (location.pathname !== lastPath) { lastPath = location.pathname; S.draft = null; S.chat = null; draw(); toMain('reread'); } }, 1000);
-  const ping = () => api('/ext/ping', { page: location.pathname, version: VERSION }).then(r => { S.err = r.error || (S.err.startsWith('连不上') || S.err.startsWith('插件') ? '' : S.err); draw(); });
+  setInterval(() => { if (location.pathname !== lastPath) { lastPath = location.pathname; S.draft = null; S.chat = null; S.pending = null; draw(); toMain('reread'); } }, 1000);
+  const ping = () => api('/ext/ping', { page: location.pathname, version: VERSION }).then(r => {
+    S.err = r.error || (S.err.startsWith('连不上') || S.err.startsWith('插件') ? '' : S.err);
+    if (r.data?.auto) { const was = S.auto?.enabled; S.auto = r.data.auto; if (was === false && S.auto.enabled) log('后台已开启全自动回复'); }
+    draw();
+  });
   ping(); setInterval(ping, 60000);
   draw();
 })();

@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { openDb, getSetting, setSetting, addEvent } from './db.js';
 import { normalizeZhaopin, screen } from './rules.js';
-import { polishReasons, suggestReply, riskCheck } from './ai.js';
+import { polishReasons, suggestReply, riskCheck, decideMode } from './ai.js';
 import { llmConfigured, chat } from './llm.js';
 import { findSlot, book, autoSchedule, interviewerStatus, workDays, activeAppt, halfOf } from './schedule.js';
 import { todayCN, nowCN, j, s, clip, weekday, WEEK, randomToken } from './util.js';
@@ -87,7 +87,10 @@ function candOut(c, full = false) {
   return o;
 }
 const getCand = id => db.prepare('SELECT * FROM candidates WHERE id=?').get(id);
-const settingsAll = () => ({ org: getSetting(db, 'org'), rules: getSetting(db, 'rules'), schedule: getSetting(db, 'schedule'), ai: getSetting(db, 'ai'), kb: getSetting(db, 'kb') });
+const settingsAll = () => ({ org: getSetting(db, 'org'), rules: getSetting(db, 'rules'), schedule: getSetting(db, 'schedule'), ai: getSetting(db, 'ai'), kb: getSetting(db, 'kb'),
+  autoReply: getSetting(db, 'autoReply'), kbDoc: getSetting(db, 'kbDoc') || '' });
+const hourAgoCN = () => new Date(Date.now() - 3600e3).toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' });
+const autoSentLastHour = () => db.prepare("SELECT COUNT(*) n FROM messages WHERE by='ai-auto' AND at>=?").get(hourAgoCN()).n;
 
 function upsertScreened(platform, job, n, sc, source) {
   const now = nowCN();
@@ -125,7 +128,27 @@ route('GET', '/api/health', 'public', (req, res) => send(res, 200, { ok: true, t
 route('POST', '/api/ext/ping', 'ext', async (req, res) => {
   const b = await body(req);
   setSetting(db, 'ext_last', { at: nowCN(), page: clip(b.page, 60), version: clip(b.version, 20) });
-  send(res, 200, { ok: true, today: todayCN() });
+  const ar = getSetting(db, 'autoReply');
+  send(res, 200, { ok: true, today: todayCN(), auto: { enabled: !!ar.enabled, hours: ar.hours, scanUnread: ar.scanUnread !== false, sentLastHour: autoSentLastHour(), maxPerHour: ar.maxPerHour } });
+});
+
+// knowledge base, editable from the extension options page as well as the admin
+route('GET', '/api/ext/kb', 'ext', (req, res) => send(res, 200, { kbDoc: getSetting(db, 'kbDoc') || '', kb: getSetting(db, 'kb') }));
+route('PUT', '/api/ext/kb', 'ext', async (req, res) => {
+  const b = await body(req);
+  if (typeof b.kbDoc === 'string') setSetting(db, 'kbDoc', clip(b.kbDoc, 20000));
+  send(res, 200, { ok: true, length: (getSetting(db, 'kbDoc') || '').length });
+});
+
+// per-conversation reply mode: 'auto' | 'semi' | 'human' | null (按分类)
+route('POST', '/api/ext/chat/mode', 'ext', async (req, res) => {
+  const b = await body(req);
+  const c = getCand(Number(b.candidateId));
+  if (!c) return fail(res, 404, '候选人不存在');
+  const m = ['auto', 'semi', 'human'].includes(b.mode) ? b.mode : null;
+  db.prepare('UPDATE candidates SET chat_mode=? WHERE id=?').run(m, c.id);
+  addEvent(db, c.id, `回复方式改为：${m ? { auto: '全自动', semi: '半自动', human: '转人工' }[m] : '按分类'}`);
+  send(res, 200, { ok: true, mode: m });
 });
 
 route('POST', '/api/ext/screen', 'ext', async (req, res) => {
@@ -190,7 +213,8 @@ route('POST', '/api/ext/chat/suggest', 'ext', async (req, res) => {
   // persist extracted slots (no state change until the staff sends)
   const slots = { ...j(c.slots_json, {}), ...d.slots };
   db.prepare('UPDATE candidates SET slots_json=?, updated_at=? WHERE id=?').run(s(slots), nowCN(), c.id);
-  send(res, 200, { candidateId: c.id, draft: d, attend: getCand(c.id).attend });
+  const decision = decideMode(d, { autoReply: st.autoReply, override: c.chat_mode || null, nowHM: nowCN().slice(11, 16), sentLastHour: autoSentLastHour() });
+  send(res, 200, { candidateId: c.id, draft: d, decision, chatMode: c.chat_mode || null, attend: getCand(c.id).attend });
 });
 
 // staff confirmed (sent) a draft in the platform → apply its state change
@@ -199,7 +223,8 @@ route('POST', '/api/ext/chat/applied', 'ext', async (req, res) => {
   const c = getCand(Number(b.candidateId));
   if (!c) return fail(res, 404, '候选人不存在');
   const d = b.draft || {};
-  if (d.reply) db.prepare('INSERT INTO messages(candidate_id,dir,by,text,at) VALUES(?,?,?,?,?)').run(c.id, 'out', 'ai', clip(d.reply, 1000), nowCN());
+  if (d.reply) db.prepare('INSERT INTO messages(candidate_id,dir,by,text,at) VALUES(?,?,?,?,?)').run(c.id, 'out', b.auto ? 'ai-auto' : 'ai', clip(d.reply, 1000), nowCN());
+  if (b.auto) addEvent(db, c.id, `AI 全自动回复（${d.intent || ''}）`);
   applyDraft(c, d);
   send(res, 200, { ok: true, candidate: candOut(getCand(c.id)) });
 });
@@ -300,7 +325,9 @@ route('POST', '/api/candidates/:id/chat-test', 'admin', async (req, res, p) => {
     db.prepare('INSERT INTO messages(candidate_id,dir,by,text,at) VALUES(?,?,?,?,?)').run(c.id, 'out', 'ai', d.reply, nowCN());
     applyDraft(getCand(c.id), d);
   } else if (b.apply && d.blocked) applyDraft(getCand(c.id), { handoff: true, handoffWhy: d.handoffWhy });
-  send(res, 200, { draft: d, candidate: candOut(getCand(c.id), true) });
+  const st = settingsAll();
+  const decision = decideMode(d, { autoReply: st.autoReply, override: c.chat_mode || null, nowHM: nowCN().slice(11, 16), sentLastHour: autoSentLastHour() });
+  send(res, 200, { draft: d, decision, candidate: candOut(getCand(c.id), true) });
 });
 
 // schedule
@@ -381,7 +408,8 @@ route('PATCH', '/api/interviewers/:id', 'admin', async (req, res, p) => {
 route('GET', '/api/settings', 'admin', (req, res) => send(res, 200, { ...settingsAll(), extToken: getSetting(db, 'ext_token'), ext: getSetting(db, 'ext_last'), llm: llmConfigured() }));
 route('PUT', '/api/settings', 'admin', async (req, res) => {
   const b = await body(req);
-  for (const k of ['org', 'rules', 'schedule', 'ai', 'kb']) if (b[k] !== undefined) setSetting(db, k, b[k]);
+  for (const k of ['org', 'rules', 'schedule', 'ai', 'kb', 'autoReply']) if (b[k] !== undefined) setSetting(db, k, b[k]);
+  if (typeof b.kbDoc === 'string') setSetting(db, 'kbDoc', clip(b.kbDoc, 20000));
   send(res, 200, settingsAll());
 });
 route('POST', '/api/settings/rotate-token', 'admin', (req, res) => { const t = randomToken(18); setSetting(db, 'ext_token', t); send(res, 200, { extToken: t }); });

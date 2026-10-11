@@ -235,8 +235,11 @@ async function vChat(m) {
       const r = await api(`/candidates/${c.id}/chat-test`, { body: { text, apply } });
       const dr = r.draft;
       const chk = (ok, n) => `<div><span class="tag ${ok ? 't-ok' : 't-bad'}">${ok ? '通过' : '命中'}</span>${esc(n)}</div>`;
-      $('#draft').innerHTML = `<h4>AI 建议 · 意图：${esc(dr.intent)} <span class="mini-tag">（${esc(dr.model)}）</span></h4>
-        <div class="draft ${dr.blocked ? 'blocked' : ''}">${esc(dr.reply)}</div>
+      const dc = r.decision || {};
+      const modeTag = { auto: ['t-ok', '全自动'], semi: ['t-warn', '半自动'], human: ['t-bad', '转人工'] }[dc.mode] || ['', ''];
+      $('#draft').innerHTML = `<h4>AI 建议 · 分类：${esc(dr.intent)} <span class="mini-tag">（${esc(dr.model)}）</span></h4>
+        <div style="margin:0 0 8px"><span class="tag ${modeTag[0]}">${modeTag[1]}</span> <span class="small muted">${esc(dc.why || '')}${dc.mode === 'auto' ? `，插件会在约 ${Math.round(dc.delayMs / 1000)} 秒后自动发送` : ''}</span></div>
+        <div class="draft ${dr.blocked ? 'blocked' : ''}">${(dr.parts || [dr.reply]).map(esc).join('<br><span class="small muted">— 分两条发 —</span><br>')}</div>
         <div class="checks">${chk(!dr.checks.guard.length, '我方护栏' + (dr.checks.guard.length ? '：' + dr.checks.guard.join('、') : ''))}${chk(!dr.checks.platform.length, '平台拦截规则' + (dr.checks.platform.length ? '：' + dr.checks.platform.join('、') : ''))}</div>
         ${dr.action ? `<div class="act">建议动作：在平台点「${esc(dr.action)}」${dr.slot ? `（${esc(dr.slot.date)} ${esc(dr.slot.slot)}）` : ''}</div>` : ''}
         ${dr.handoff ? `<div class="act" style="border-color:var(--bad);color:var(--bad)">转人工：${esc(dr.handoffWhy || '')}</div>` : ''}
@@ -308,7 +311,10 @@ async function vSched(m) {
 async function vSettings(m) {
   m.innerHTML = loading;
   const [st, ivs] = await Promise.all([api('/settings'), api('/interviewers')]);
-  const R = st.rules, SC = st.schedule, AI = st.ai, ORG = st.org;
+  const R = st.rules, SC = st.schedule, AI = st.ai, ORG = st.org, AR = st.autoReply;
+  const MODES = { auto: '全自动', semi: '半自动', human: '转人工' };
+  const AR_CATS = { 提问: '学校在哪？上几节课？', 提供信息: '有初中数学教资，2 月能到岗', 约面时间: '明天下午可以去面试', 确认参加: '好的，我会准时到',
+    改期: '明天有事，能改个时间吗', 拒绝: '不考虑了，已经找到了', 议价: '工资能保证一万吗', 要求真人: '我想找真人聊', 交换联系方式: '可以加个微信吗', 其他: '其他消息' };
   m.innerHTML = ph('设置', '插件、AI 模型、初筛规则、面试时段、面试官和知识库。修改后点对应区块的“保存”。') + `
   <div class="g3" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr)">
   <div style="display:flex;flex-direction:column;gap:16px;min-width:0">
@@ -335,6 +341,22 @@ async function vSettings(m) {
       <label class="fi">意向型最低学历<select id="r-ie">${['大专', '本科', '硕士'].map(x => `<option ${x === (R.intentMinEdu || '本科') ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
       <label class="fi full">求职方向关键词（命中任一即算教师类，逗号分隔）<input id="r-ik" value="${esc((R.intentKeywords || []).join('，'))}"></label></div>
       <div class="inline-form"><button class="btn pri" id="r-save">保存</button><button class="btn" id="r-re">按新规则重新初筛全部</button></div></div></div>
+    <div class="card" id="ar-card"><div class="card-h"><h3>约聊回复方式</h3><span class="sub">候选人每条消息先由 AI 分类，再按分类处理</span></div><div class="card-b">
+      <label class="fi full" style="flex-direction:row;gap:8px;align-items:center;font-size:14px"><input type="checkbox" id="ar-on" style="width:auto" ${AR.enabled ? 'checked' : ''}><b>开启全自动回复</b><span class="small muted">（关闭时，设为“全自动”的分类也只给建议）</span></label>
+      <table class="tbl" style="margin:10px 0"><thead><tr><th>消息分类</th><th>示例</th><th>处理方式</th></tr></thead><tbody>
+        ${Object.entries(AR_CATS).map(([k, ex]) => `<tr><td><b>${k}</b></td><td class="small muted">${esc(ex)}</td><td><select class="inp" data-pol="${k}" style="width:auto">${Object.entries(MODES).map(([v, t]) => `<option value="${v}" ${(AR.policy[k] || 'semi') === v ? 'selected' : ''}>${t}</option>`).join('')}</select></td></tr>`).join('')}
+      </tbody></table>
+      <p class="small muted" style="margin:0 0 8px">全自动：AI 直接回复并发送；半自动：插件给出建议，由你点发送；转人工：不回复，提醒你处理。回复没通过发送前检查时，一律转人工。</p>
+      <div class="grid-form">
+        <label class="fi">自动回复开始<input id="ar-h0" type="time" value="${esc(AR.hours[0])}"></label><label class="fi">自动回复结束<input id="ar-h1" type="time" value="${esc(AR.hours[1])}"></label>
+        <label class="fi">最短等待（秒）<input id="ar-d0" type="number" value="${esc(AR.delayMin)}"></label><label class="fi">最长等待（秒）<input id="ar-d1" type="number" value="${esc(AR.delayMax)}"></label>
+        <label class="fi">每小时最多自动发送<input id="ar-max" type="number" value="${esc(AR.maxPerHour)}"></label>
+        <label class="fi" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" id="ar-scan" style="width:auto" ${AR.scanUnread !== false ? 'checked' : ''}>自动打开有未读消息的会话</label>
+        <label class="fi full">回复风格（让 AI 像真人一样说话）<textarea id="ar-style" style="min-height:70px">${esc(AR.style)}</textarea></label></div>
+      <div class="inline-form"><button class="btn pri" id="ar-save">保存</button></div></div></div>
+    <div class="card" id="kbdoc-card"><div class="card-h"><h3>知识库（整段粘贴）</h3><span class="sub">AI 回复只能用这里和右侧问答里的事实</span></div><div class="card-b">
+      <textarea id="kbdoc" class="inp" style="min-height:260px;font-family:inherit" placeholder="把学校介绍、岗位要求、薪资福利说明、面试流程、常见问题及答案等，直接整段粘贴到这里。&#10;&#10;建议格式（不强制）：&#10;【学校介绍】……&#10;【岗位与要求】……&#10;【薪资福利】……（不想让 AI 说的，就不要写进来）&#10;【面试流程】……&#10;【常见问题】问：……  答：……">${esc(st.kbDoc || '')}</textarea>
+      <div class="inline-form"><button class="btn pri" id="kbdoc-save">保存知识库</button><span class="small muted" id="kbdoc-n">${(st.kbDoc || '').length} / 20000 字</span></div></div></div>
     <div class="card tester"><div class="card-h"><h3>发送前检查</h3><span class="sub">输入一条消息试试</span></div><div class="card-b">
       <textarea id="rt" class="inp" style="min-height:70px">可以关注我们的公众号，工资保证一万，链接 xxedu.cn/r/20261011003</textarea><div class="hits" id="hits"></div></div></div>
   </div>
@@ -362,6 +384,14 @@ async function vSettings(m) {
   $('#ai-test').onclick = async () => { $('#ai-res').textContent = '测试中…'; const r = await api('/tools/llm-test', { body: {} }); $('#ai-res').innerHTML = r.ok ? `<b class="ok-dot">● 正常</b> ${esc(r.provider)}/${esc(r.model)} · ${r.ms} ms · “${esc(r.reply)}”` : `<b class="bad-dot">● 失败</b> ${esc(r.error)}`; };
   $('#r-save').onclick = () => save({ rules: { maxAge: +$('#r-age').value, minEdu: $('#r-edu').value, subjectKeywords: list($('#r-kw').value), schoolPattern: $('#r-sp').value.trim(), trainingPattern: $('#r-tp').value.trim(),
     intentTrack: $('#r-it').checked, intentMaxAge: +$('#r-ia').value || 30, intentMinEdu: $('#r-ie').value, intentKeywords: list($('#r-ik').value) } });
+  $('#ar-save').onclick = () => {
+    const policy = {}; $$('[data-pol]', m).forEach(s => { policy[s.dataset.pol] = s.value; });
+    const d0 = Math.max(5, +$('#ar-d0').value || 25), d1 = Math.max(d0, +$('#ar-d1').value || 90);
+    return save({ autoReply: { enabled: $('#ar-on').checked, hours: [$('#ar-h0').value || '08:30', $('#ar-h1').value || '21:00'], delayMin: d0, delayMax: d1,
+      maxPerHour: Math.max(1, +$('#ar-max').value || 40), scanUnread: $('#ar-scan').checked, policy, style: $('#ar-style').value.trim() } }, $('#ar-on').checked ? '已保存：全自动回复已开启' : '已保存');
+  };
+  $('#kbdoc').oninput = () => { $('#kbdoc-n').textContent = `${$('#kbdoc').value.length} / 20000 字`; };
+  $('#kbdoc-save').onclick = () => save({ kbDoc: $('#kbdoc').value }, '知识库已保存，AI 下一条回复起生效');
   $('#r-re').onclick = async () => { await $('#r-save').onclick(); const r = await api('/settings/rescreen', { body: {} }); toast(`已按新规则重新初筛 ${r.rescreened} 人`); };
   $('#s-save').onclick = async () => {
     const am = list($('#s-am').value), pm = list($('#s-pm').value);
