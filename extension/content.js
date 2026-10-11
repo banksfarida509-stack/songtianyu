@@ -80,7 +80,7 @@
     const n = v => all.filter(r => r.verdict === v).length;
     const rk = rank();
     let b = `<div class="hra-stats"><div><b>${all.length}</b>已初筛</div><div><b>${n('推荐')}</b>推荐</div><div><b>${n('待确认')}</b>待确认</div><div><b>${n('不推荐')}</b>不推荐</div></div>`;
-    b += `<div class="hra-sub">推荐顺序（${esc(S.job || '当前岗位')}）</div><div class="hra-rank">${rk.length ? rk.slice(0, 12).map(r => `<div class="hra-ri" data-uid="${esc(r.uid)}"><b>${r.score}</b><span>${esc(r.name || '')}<i>${esc(r.reason || '')}</i></span><em>${r.greeted ? '已打招呼' : ''}</em></div>`).join('') : '<p class="hra-muted">暂无推荐的人。滚动页面加载更多，插件会自动读取。</p>'}</div>`;
+    b += `<div class="hra-sub">推荐顺序（${esc(S.job || '当前岗位')}${S.roleName ? ` · 按${esc(S.roleName)}岗规则初筛` : ''}）</div><div class="hra-rank">${rk.length ? rk.slice(0, 12).map(r => `<div class="hra-ri" data-uid="${esc(r.uid)}"><b>${r.score}</b><span>${esc(r.name || '')}<i>${esc(r.reason || '')}</i></span><em>${r.greeted ? '已打招呼' : ''}</em></div>`).join('') : '<p class="hra-muted">暂无推荐的人。滚动页面加载更多，插件会自动读取。</p>'}</div>`;
     b += S.greeting
       ? `<p class="hra-muted">正在打招呼：已完成 ${S.done} / ${S.target}${S.phase ? ' · ' + esc(S.phase) : ''}</p><button class="hra-btn" data-a="stop">停止打招呼</button>`
       : S.confirmGreet
@@ -106,7 +106,7 @@
       const sc = S.screen;
       if (sc && S.candidateId) {
         const cls = sc.verdict === '推荐' ? 'ok' : sc.verdict === '不推荐' ? 'no' : 'warn';
-        b += `<div class="hra-muted"><span class="hra-tag ${cls}">初筛 ${esc(sc.verdict || '未知')}${sc.verdict === '推荐' ? ' ' + sc.score : ''}</span> ${esc({ applied: '主动投递', greeted: '我方打招呼', unknown: '' }[sc.origin] || '')}${sc.hasResume ? '' : ' · 未读到简历'}<br>${esc(sc.reason || '')}</div>`;
+        b += `<div class="hra-muted"><span class="hra-tag ${cls}">初筛 ${esc(sc.verdict || '未知')}${sc.verdict === '推荐' ? ' ' + sc.score : ''}</span> ${sc.role ? `<b>${esc(sc.role)}岗</b> · ` : ''}${esc({ applied: '主动投递', greeted: '我方打招呼', unknown: '' }[sc.origin] || '')}${sc.hasResume ? '' : ' · 未读到简历'}<br>${esc(sc.reason || '')}</div>`;
       }
       if (S.candidateId) {
         b += `<div class="hra-seg" title="只对这个会话生效">${[[null, '按分类'], ['semi', '半自动'], ['auto', '全自动'], ['human', '转人工']].map(([v, t]) => `<button data-a="mode:${v ?? ''}" class="${(S.chatMode ?? null) === v ? 'on' : ''}">${t}</button>`).join('')}</div>`;
@@ -211,6 +211,7 @@
     const r = await api('/ext/screen', { platform: PLATFORM, job: S.job, cards: fresh });
     if (r.error) { S.err = r.error; return draw(); }
     S.err = '';
+    if (r.data.role) S.roleName = r.data.role.name;
     const names = Object.fromEntries(cards.map(c => [c.resumeNumber, c.userName]));
     for (const x of r.data.results) S.results[x.uid] = { ...x, name: names[x.uid] };
     log(`读取 ${fresh.length} 张卡片并初筛`);

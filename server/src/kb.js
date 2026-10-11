@@ -15,6 +15,7 @@ export const TOPIC_WORDS = {
   岗位要求: '要求 条件 学历 资格证 经验 专业 年级 科目',
   面试安排: '面试 初试 复试 试讲 流程 时间 带什么',
   学校情况: '学校 介绍 规模 学生 班级 办学 民办 公办 升学',
+  岗位职责: '职责 工作内容 做什么 负责 日常 客户 家长 学员 业绩 提成 考核 续费 招生',
   入职发展: '入职 培训 晋升 发展 编制 合同 试用期 转正',
 };
 export const TOPICS = [...Object.keys(TOPIC_WORDS), '资格证', '到岗', '其他'];
@@ -55,8 +56,8 @@ function index(db) {
   const key = `${meta.n}|${meta.u}|${meta.l}`;
   if (cache.key === key) return cache;
   const chunks = [];
-  for (const d of db.prepare('SELECT id,title,content FROM kb_docs WHERE enabled=1 ORDER BY id').all()) {
-    for (const c of chunkText(d.title, d.content)) chunks.push({ ...c, docId: d.id, g: grams(c.title + ' ' + c.text) });
+  for (const d of db.prepare('SELECT id,title,content,role FROM kb_docs WHERE enabled=1 ORDER BY id').all()) {
+    for (const c of chunkText(d.title, d.content)) chunks.push({ ...c, docId: d.id, role: d.role || 'all', g: grams(c.title + ' ' + c.text) });
   }
   const df = new Map();
   for (const c of chunks) for (const g of c.g) df.set(g, (df.get(g) || 0) + 1);
@@ -65,8 +66,11 @@ function index(db) {
 }
 
 /** Most relevant passages for a query (candidate messages + topic). */
-export function retrieve(db, query, { topic, limit = 6, maxChars = 3200 } = {}) {
-  const { chunks, df } = index(db);
+export function retrieve(db, query, { topic, role, limit = 6, maxChars = 3200 } = {}) {
+  const idx = index(db);
+  const df = idx.df;
+  // documents for all roles plus the candidate's own role
+  const chunks = role ? idx.chunks.filter(c => c.role === 'all' || c.role === role) : idx.chunks;
   if (!chunks.length) return [];
   const q = grams(`${query} ${topic && TOPIC_WORDS[topic] ? TOPIC_WORDS[topic] : ''}`);
   const N = chunks.length;

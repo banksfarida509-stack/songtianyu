@@ -9,6 +9,7 @@ import { openDb, getSetting, setSetting, addEvent } from './db.js';
 import { normalizeZhaopin, screen } from './rules.js';
 import { polishReasons, suggestReply, riskCheck, decideMode, guessTopic } from './ai.js';
 import { retrieve, kbStats, learnFromChats } from './kb.js';
+import { roleFor, screenRole, ROLE_KEYS } from './roles.js';
 import { llmConfigured, chat } from './llm.js';
 import { findSlot, book, autoSchedule, interviewerStatus, workDays, activeAppt, halfOf } from './schedule.js';
 import { todayCN, nowCN, j, s, clip, weekday, WEEK, randomToken } from './util.js';
@@ -74,6 +75,7 @@ function candOut(c, full = false) {
     id: c.id, platform: c.platform, uid: c.uid, name: c.name, age: c.age, edu: c.edu, school: c.school, schoolTag: c.school_tag,
     major: c.major, years: c.years, careerStatus: c.career_status, expect: c.expect, job: c.job,
     verdict: c.verdict, score: c.score, reason: c.reason, reasonBy: c.reason_by, attend: c.attend, handoff: !!c.handoff,
+    role: c.role || 'teacher', roleName: (getSetting(db, 'roles')[c.role || 'teacher'] || {}).name || '教师',
     pref: j(c.pref_json, {}), slots: j(c.slots_json, {}), lastNote: c.last_note, source: c.source, owner: c.owner,
     isDemo: !!c.is_demo, createdAt: c.created_at, updatedAt: c.updated_at, appt: appt || null,
   };
@@ -89,11 +91,27 @@ function candOut(c, full = false) {
 }
 const getCand = id => db.prepare('SELECT * FROM candidates WHERE id=?').get(id);
 const settingsAll = () => ({ org: getSetting(db, 'org'), rules: getSetting(db, 'rules'), schedule: getSetting(db, 'schedule'), ai: getSetting(db, 'ai'), kb: getSetting(db, 'kb'),
-  autoReply: getSetting(db, 'autoReply'), kbDoc: getSetting(db, 'kbDoc') || '', playbook: getSetting(db, 'playbook') });
+  autoReply: getSetting(db, 'autoReply'), kbDoc: getSetting(db, 'kbDoc') || '', playbook: getSetting(db, 'playbook'), roles: getSetting(db, 'roles') });
 const hourAgoCN = () => new Date(Date.now() - 3600e3).toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' });
 const autoSentLastHour = () => db.prepare("SELECT COUNT(*) n FROM messages WHERE by='ai-auto' AND at>=?").get(hourAgoCN()).n;
 
+// job role from the job title (教师 / 学管师 / 咨询师); screening uses that role's rules
+function roleOf(job) {
+  const roles = getSetting(db, 'roles');
+  const key = roleFor(job, roles);
+  return { key, ...roles[key] };
+}
+function screenFor(n, job) {
+  const role = roleOf(job);
+  const sc = role.key === 'teacher' ? screen(n, getSetting(db, 'rules')) : screenRole(n, role);
+  return { ...sc, roleKey: role.key };
+}
 function upsertScreened(platform, job, n, sc, source) {
+  const r = upsertScreenedRow(platform, job, n, sc, source);
+  if (sc.roleKey) db.prepare('UPDATE candidates SET role=? WHERE id=?').run(sc.roleKey, r.id);
+  return getCand(r.id);
+}
+function upsertScreenedRow(platform, job, n, sc, source) {
   const now = nowCN();
   const ex = db.prepare('SELECT * FROM candidates WHERE platform=? AND uid=?').get(platform, n.uid);
   const vals = [n.name, n.gender, n.age, n.edu, n.school, n.school_tag, n.major, n.years, n.career_status, n.expect, job,
@@ -154,13 +172,14 @@ route('POST', '/api/ext/chat/invited', 'ext', async (req, res) => {
 
 // knowledge-base documents: the extension options page can list them and add text documents
 const KB_MAX = 500000;
-const docList = () => db.prepare('SELECT id,title,source,enabled,length(content) chars,updated_at FROM kb_docs ORDER BY id DESC').all();
+const docList = () => db.prepare('SELECT id,title,source,enabled,role,length(content) chars,updated_at FROM kb_docs ORDER BY id DESC').all();
 function addDoc(b, source) {
   const title = clip(String(b.title || '').trim(), 80) || '未命名文档';
   const content = clip(String(b.content || ''), KB_MAX);
   if (!content.trim()) throw new Error('文档内容为空');
   const now = nowCN();
-  return Number(db.prepare('INSERT INTO kb_docs(title,source,content,created_at,updated_at) VALUES(?,?,?,?,?)').run(title, clip(b.source || source, 40), content, now, now).lastInsertRowid);
+  const role = ['all', ...ROLE_KEYS].includes(b.role) ? b.role : 'all';
+  return Number(db.prepare('INSERT INTO kb_docs(title,source,content,role,created_at,updated_at) VALUES(?,?,?,?,?,?)').run(title, clip(b.source || source, 40), content, role, now, now).lastInsertRowid);
 }
 route('GET', '/api/ext/kb', 'ext', (req, res) => send(res, 200, { docs: docList(), stats: kbStats(db) }));
 route('POST', '/api/ext/kb/docs', 'ext', async (req, res) => {
@@ -196,16 +215,16 @@ route('POST', '/api/ext/chat/mode', 'ext', async (req, res) => {
 route('POST', '/api/ext/screen', 'ext', async (req, res) => {
   const b = await body(req);
   const platform = b.platform === 'boss' ? 'boss' : 'zhaopin';
-  const rules = getSetting(db, 'rules');
+  const role = roleOf(b.job);
   const out = [];
   for (const raw of (b.cards || []).slice(0, 60)) {
     const n = normalizeZhaopin(raw);
     if (!n.uid) continue;
-    const sc = screen(n, rules);
+    const sc = screenFor(n, b.job);
     const c = upsertScreened(platform, clip(b.job, 40) || null, n, sc, platform === 'zhaopin' ? '智联 推荐列表' : 'BOSS');
     out.push({ uid: n.uid, id: c.id, verdict: c.verdict, score: c.score, reason: c.reason, reasonBy: c.reason_by, attend: c.attend });
   }
-  send(res, 200, { results: out });
+  send(res, 200, { results: out, role: { key: role.key, name: role.name } });
 });
 
 // AI reasons for already-screened candidates (slower, called after /screen)
@@ -276,8 +295,10 @@ route('POST', '/api/ext/chat/suggest', 'ext', async (req, res) => {
   // resume shown in the chat (candidate applied): screen it with the same rules as the recommend page
   if (b.profile && typeof b.profile === 'object') {
     const n = normalizeZhaopin({ ...b.profile, resumeNumber: c.uid, userName: b.profile.userName || b.name });
-    if (n.edu || n.age != null || n.work.length) c = upsertScreened(platform, clip(b.job, 40) || null, n, screen(n, getSetting(db, 'rules')), platform === 'zhaopin' ? '智联 聊天（投递）' : 'BOSS 聊天');
+    if (n.edu || n.age != null || n.work.length) c = upsertScreened(platform, clip(b.job, 40) || null, n, screenFor(n, b.job || c.job), platform === 'zhaopin' ? '智联 聊天（投递）' : 'BOSS 聊天');
   }
+  const role = roleOf(b.job || c.job);
+  if (c.role !== role.key) db.prepare('UPDATE candidates SET role=? WHERE id=?').run(role.key, c.id);
   storeMessages(c, (b.messages || []).slice(-40));
   if (c.attend === '未联系') db.prepare("UPDATE candidates SET attend='沟通中' WHERE id=?").run(c.id);
   const cx = chatContext(c.id);
@@ -288,7 +309,7 @@ route('POST', '/api/ext/chat/suggest', 'ext', async (req, res) => {
   // the same conversation asked twice at once (double click, two tabs): share one AI call
   const key = `${c.id}:${cx.history.length}:${cx.history.at(-1)?.text || ''}`;
   if (!inflight.has(key)) {
-    inflight.set(key, suggestReply({ ...c, slots: j(c.slots_json, {}) }, cx.history, { settings: st, appt, db, earlierQuestions: cx.earlierQuestions, origin, offer })
+    inflight.set(key, suggestReply({ ...c, slots: j(c.slots_json, {}) }, cx.history, { settings: st, appt, db, earlierQuestions: cx.earlierQuestions, origin, offer, role })
       .finally(() => setTimeout(() => inflight.delete(key), 3000)));
   }
   const d = await inflight.get(key);
@@ -299,7 +320,7 @@ route('POST', '/api/ext/chat/suggest', 'ext', async (req, res) => {
   const decision = decideMode(d, { autoReply: st.autoReply, override: c.chat_mode || null, nowHM: nowCN().slice(11, 16), sentLastHour: autoSentLastHour() });
   const now = getCand(c.id);
   send(res, 200, { candidateId: c.id, draft: d, decision, chatMode: c.chat_mode || null, attend: now.attend,
-    screen: { verdict: now.verdict, score: now.score, reason: now.reason, origin, hasResume: !!b.profile } });
+    screen: { verdict: now.verdict, score: now.score, reason: now.reason, origin, hasResume: !!b.profile, role: role.name } });
 });
 
 // staff confirmed (sent) a draft in the platform → apply its state change
@@ -404,7 +425,8 @@ route('POST', '/api/candidates/:id/chat-test', 'admin', async (req, res, p) => {
   if (b.text) db.prepare('INSERT INTO messages(candidate_id,dir,by,text,at) VALUES(?,?,?,?,?)').run(c.id, 'in', 'candidate', clip(b.text, 500), nowCN());
   if (c.attend === '未联系') db.prepare("UPDATE candidates SET attend='沟通中' WHERE id=?").run(c.id);
   const cx = chatContext(c.id);
-  const d = await suggestReply({ ...c, slots: j(c.slots_json, {}) }, cx.history, { settings: settingsAll(), appt: activeAppt(db, c.id), db, earlierQuestions: cx.earlierQuestions });
+  const d = await suggestReply({ ...c, slots: j(c.slots_json, {}) }, cx.history, { settings: settingsAll(), appt: activeAppt(db, c.id), db, earlierQuestions: cx.earlierQuestions,
+    role: roleOf(c.job), offer: ['am', 'pm'].map(half => findSlot(db, { half })).filter(Boolean) });
   if (d.topic) tagTopic(cx.unansweredIds, d.topic);
   db.prepare('UPDATE candidates SET slots_json=? WHERE id=?').run(s({ ...j(c.slots_json, {}), ...d.slots }), c.id);
   if (b.apply && !d.blocked) {
@@ -494,7 +516,7 @@ route('PATCH', '/api/interviewers/:id', 'admin', async (req, res, p) => {
 route('GET', '/api/settings', 'admin', (req, res) => send(res, 200, { ...settingsAll(), extToken: getSetting(db, 'ext_token'), ext: getSetting(db, 'ext_last'), llm: llmConfigured() }));
 route('PUT', '/api/settings', 'admin', async (req, res) => {
   const b = await body(req);
-  for (const k of ['org', 'rules', 'schedule', 'ai', 'kb', 'autoReply', 'playbook']) if (b[k] !== undefined) setSetting(db, k, b[k]);
+  for (const k of ['org', 'rules', 'schedule', 'ai', 'kb', 'autoReply', 'playbook', 'roles']) if (b[k] !== undefined) setSetting(db, k, b[k]);
   if (typeof b.kbDoc === 'string') setSetting(db, 'kbDoc', clip(b.kbDoc, 20000));
   send(res, 200, settingsAll());
 });
@@ -514,6 +536,7 @@ route('PATCH', '/api/kb/docs/:id', 'admin', async (req, res, p) => {
   if (typeof b.title === 'string' && b.title.trim()) db.prepare('UPDATE kb_docs SET title=? WHERE id=?').run(clip(b.title.trim(), 80), id);
   if (typeof b.content === 'string' && b.content.trim()) db.prepare('UPDATE kb_docs SET content=? WHERE id=?').run(clip(b.content, KB_MAX), id);
   if (typeof b.enabled === 'boolean') db.prepare('UPDATE kb_docs SET enabled=? WHERE id=?').run(b.enabled ? 1 : 0, id);
+  if (['all', ...ROLE_KEYS].includes(b.role)) db.prepare('UPDATE kb_docs SET role=? WHERE id=?').run(b.role, id);
   db.prepare('UPDATE kb_docs SET updated_at=? WHERE id=?').run(nowCN(), id);
   send(res, 200, { ok: true, stats: kbStats(db) });
 });
@@ -543,7 +566,8 @@ route('POST', '/api/settings/rescreen', 'admin', (req, res) => {
   for (const c of db.prepare("SELECT * FROM candidates WHERE work_json IS NOT NULL").all()) {
     const norm = { uid: c.uid, name: c.name, age: c.age, edu: c.edu, school: c.school, school_tag: c.school_tag, major: c.major, years: c.years, expect: c.expect,
       work: j(c.work_json, []), edus: j(c.edu_json, []), skills: j(c.skills_json, []), certs: j(c.certs_json, []) };
-    const sc = screen(norm, rules);
+    const sc = screenFor(norm, c.job);
+    db.prepare('UPDATE candidates SET role=? WHERE id=?').run(sc.roleKey, c.id);
     db.prepare("UPDATE candidates SET verdict=?, score=?, rules_json=?, reason=CASE WHEN reason_by='staff' THEN reason ELSE ? END, reason_by=CASE WHEN reason_by='staff' THEN 'staff' ELSE 'rule' END WHERE id=?")
       .run(sc.verdict, sc.score, s(sc.rules), sc.reason, c.id); n++;
   }

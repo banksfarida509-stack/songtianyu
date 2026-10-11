@@ -24,7 +24,8 @@ test('长文档按段落切分，每段不超过上限', () => {
 test('检索：几点下班 → 作息时间；有五险一金吗 → 薪资福利', () => {
   assert.equal(retrieve(db, '你们几点下班？', { topic: guessTopic('你们几点下班？') })[0].title, '作息时间');
   assert.equal(retrieve(db, '有五险一金吗', { topic: guessTopic('有五险一金吗') })[0].title, '薪资福利说明');
-  assert.equal(kbStats(db).docs, 3);
+  assert.equal(kbStats(db).enabled, 3);   // + 2 disabled role templates (学管师 / 咨询师)
+  assert.equal(kbStats(db).docs, 5);
 });
 
 test('同一问题第二次问 → 计为第 2 遍', () => {

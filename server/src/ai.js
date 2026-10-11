@@ -4,6 +4,7 @@
 import { chat, parseJson, llmConfigured } from './llm.js';
 import { clip, todayCN, addDays } from './util.js';
 import { retrieve, TOPICS, TOPIC_WORDS } from './kb.js';
+import { DEFAULT_ROLES } from './roles.js';
 
 // ---- platform blocking rules (taken from 智联 chat page im.riskRules, subset) ----
 export const PLATFORM_RISK = [
@@ -154,7 +155,9 @@ export async function suggestReply(candidate, history, ctx) {
   const lastOut = history.map(m => m.dir).lastIndexOf('out');
   const unanswered = history.slice(lastOut + 1).filter(m => m.dir === 'in').map(m => m.text);
   const query = (unanswered.length ? unanswered : [lastText]).join(' ');
-  const passages = ctx.db ? retrieve(ctx.db, query, { topic: guessTopic(query) }) : [];
+  // the job role decides what we ask, what we stress and which documents apply
+  const role = ctx.role || { key: 'teacher', ...DEFAULT_ROLES.teacher };
+  const passages = ctx.db ? retrieve(ctx.db, query, { topic: guessTopic(query), role: role.key }) : [];
   const docText = passages.map((p, i) => `[D${i + 1}｜${p.title}] ${p.text}`).join('\n');
   const me = `${org.name || '学校'}的${org.role || '招聘约访官，同时负责初试面试'}${org.agentName ? `（候选人称呼你“${org.agentName}”）` : ''}`;
   // scenario: who started the chat, is this our first reply, what did screening say.
@@ -177,9 +180,8 @@ export async function suggestReply(candidate, history, ctx) {
   ].join('；');
   // what we still want to know before inviting, in this order; skip what is already known
   const known = candidate.slots || {};
-  // 教师资格证 is only a plus: never asked for; mention it is welcome if the candidate brings it up
-  const toAsk = [['employed', '现在是在职还是已经离职'], ['live', '现在住在哪里 / 来学校方不方便'], ['subject', '想教哪个科目'], ['arrive', '什么时候可以开始工作']]
-    .filter(([k]) => !known[k]).map(([, q]) => q);
+  const questions = (role.questions && role.questions.length ? role.questions : DEFAULT_ROLES.teacher.questions);
+  const toAsk = questions.filter(([k]) => !known[k]).map(([, q]) => q);
   const rounds = history.filter(m => m.dir === 'out' && !m.tpl).length;
   const pace = `沟通节奏：先寒暄、了解情况，再介绍和邀约。还没了解的：${toAsk.join('、') || '（都已了解）'}。每条消息最多问一个问题，已经知道的不要再问。对方提出问题时先认真回答，再顺带问下一个。`
     + `已经聊了 ${rounds} 轮；当对方表现出意向，或基本情况已了解大半（或已聊到第 3 轮以上）时，就主动邀约初试，给出上面的时间选项。`;
@@ -193,13 +195,14 @@ export async function suggestReply(candidate, history, ctx) {
         : `对方表现出意向（愿意、可以、感兴趣、问面试 / 流程）而还没约时间时，要主动邀约，直接给出上面的时间选项让对方选；对方犹豫时先解答顾虑，再邀约一次。${pace}`;
   let ai = null, model = null, err = null;
   if (llmConfigured() && settings.ai.enabled) {
-    const sys = `你是${me}，在招聘平台上用第一人称直接和应聘教师岗位的候选人聊天：代表学校回答问题、了解对方情况、邀约初试。你就是负责这件事的人，不要说“我帮你问问招聘老师”“我是助手”这类话。
+    const sys = `你是${me}，在招聘平台上用第一人称直接和应聘「${role.name}」岗位的候选人聊天：代表学校回答问题、了解对方情况、邀约初试。你就是负责这件事的人，不要说“我帮你问问招聘老师”“我是助手”这类话。
 1. 说话风格：${style}回复 1–3 句，一般不超过 60 字；不要每句都以“好的”开头；不要重复你上一条已经问过的问题；称呼用“你”。对方连发了几条时，一次把几条都回应到。
 2. 薪资、待遇福利、作息时间等问题，用下面资料里的事实直接、具体地回答，可以顺带说明面试时会详细介绍。
 3. 只能使用下面“学校资料”和“问答”里的事实，不得编造任何数字、薪资、福利、承诺。资料里找不到答案时，回答“这个我核实一下，晚点回复你”，并把 unknown 设为 true。
 4. 只有对方明确问你是不是真人 / 机器人 / AI 时，才如实说明你是学校的 AI 招聘助理、可以转人工；其他时候不提。
 5. 不说“保证、一定”等承诺词，不提年龄、性别、婚育、户籍要求。不在消息里写电话、微信号、公众号、链接或 6 位以上数字；交换联系方式由平台按钮完成。
-6. 目标：了解基本情况——在职还是离职、住在哪里、想教哪个科目、什么时候可以开始工作，然后约初试（上午 9:00–11:00 或下午 13:00–15:00）。面试地点统一在${org.place}。教师资格证只是加分项、不是必须：不要主动追问；对方提到或问起时，说有的话更好、没有也可以先来面试。
+6. 目标：了解基本情况——${questions.map(([, q]) => q).join('、')}，然后约初试（上午 9:00–11:00 或下午 13:00–15:00）。面试地点统一在${org.place}。
+   岗位要点（${role.name}）：${role.focus || ''}
 7. 判断对方这次的问题之前是否已经问过（看聊天记录里对方的旧消息，同一个意思换了说法也算），填 askedBefore。
 8. 当前情况：${situation}
 9. ${scenarioRule}
@@ -209,7 +212,7 @@ ${pb ? `10. 下面是这位招聘负责人过去的沟通逻辑和话术，请�
 ${docText || '（无相关段落）'}
 今天是 ${todayCN()}，明天是 ${tomorrow}。
 已知信息：${JSON.stringify(slots)}；当前面试安排：${appt ? `${appt.date} ${appt.slot}（${appt.status}）` : '无'}。
-只输出 JSON：{"intent":"${INTENTS.join('|')}","topic":"${TOPICS.join('|')}","askedBefore":false,"unknown":false,"slots":{"employed":"在职/离职/应届/null","live":"住处或null","subject":"想教的科目或null","cert":"有/没有/在考/null","arrive":"可开始工作的时间或null","day":"YYYY-MM-DD 或 null","half":"am/pm/any/null"},"reply":"给候选人的回复","kb":["引用的编号，如 KB-01、D2"]}
+只输出 JSON：{"intent":"${INTENTS.join('|')}","topic":"${TOPICS.join('|')}","askedBefore":false,"unknown":false,"slots":{${questions.map(([k, q]) => `"${k}":"${q.replace(/"/g, '')}的答案，或null"`).join(',')},"cert":"有/没有/在考/null","day":"YYYY-MM-DD 或 null","half":"am/pm/any/null"},"reply":"给候选人的回复","kb":["引用的编号，如 KB-01、D2"]}
 说明：intent 里“议价”只指讨价还价（能不能再高点、能保证一万吗）；单纯问工资多少、有没有五险一金、几点下班属于“提问”。`;
     const msgs = [{ role: 'system', content: sys }];
     // cards are described in words (a "[卡片]" prefix makes the model copy it); template greetings are labelled
@@ -305,10 +308,10 @@ ${docText || '（无相关段落）'}
   }
   if (!reply && /在哪|地址|地点|位置/.test(lastText)) {
     const k = kb.find(x => /地点|地址/.test(x.q));
-    if (k) reply = `${k.a}${toAsk[0] ? `方便说下你${toAsk[0]}吗？` : ''}`;
+    if (k) reply = `${k.a}${toAsk[0] ? `方便说下，你${toAsk[0]}？` : ''}`;
   }
   // no AI: ask the next basic question that is still unknown
-  const nextQ = { 现在是在职还是已经离职: '你现在是在职还是已经离职了？', '现在住在哪里 / 来学校方不方便': '你现在住在哪边？过来学校方便吗？', 想教哪个科目: '你比较想教哪个科目？', 什么时候可以开始工作: '你大概什么时候可以开始工作？' }[toAsk[0]];
+  const nextQ = toAsk[0] ? `方便说下，你${toAsk[0]}？` : null;
   if (!reply) reply = nextQ ? `收到。${nextQ}` : `收到。${offerTxt ? `方便来学校初试吗？${offerTxt}都可以。` : '方便的话约个时间来学校初试？'}`;
 
   // ---- checks ----

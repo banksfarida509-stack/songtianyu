@@ -123,7 +123,7 @@ async function vScreen(m) {
       <span>AI 推荐理由：${st.llm ? '<b class="ok-dot">● 已接入学员系统 AI 接口</b>' : '<b class="bad-dot">● 未配置，使用规则理由</b>'}</span></div></div>
     <div class="card"><div class="toolbar"><div class="seg">${['全部', '推荐', '待确认', '不推荐'].map(v => `<button aria-pressed="${S.vfilter === v}" data-vf="${v}">${v}<span class="c">${v === '全部' ? total : vc[v] || 0}</span></button>`).join('')}</div></div>
     <div class="tbl-wrap"><table class="rowc"><thead><tr><th>候选人</th><th>学校 · 专业</th><th>AI 结论</th><th>分数</th><th>推荐理由</th><th>来源</th><th>约聊状态</th></tr></thead><tbody>
-    ${d.rows.length ? d.rows.map(c => `<tr data-id="${c.id}"><td><div class="cand"><span class="ava">${esc((c.name || '?')[0])}</span><div><b>${esc(c.name)}${c.isDemo ? '<span class="demo-tag">示例</span>' : ''}</b><span>${c.age ?? '—'}岁 · ${esc(c.edu || '—')} · ${esc(c.years || '')}</span></div></div></td>
+    ${d.rows.length ? d.rows.map(c => `<tr data-id="${c.id}"><td><div class="cand"><span class="ava">${esc((c.name || '?')[0])}</span><div><b>${esc(c.name)}${c.roleName && c.role !== 'teacher' ? ` <span class="tag t-info">${esc(c.roleName)}</span>` : ''}${c.isDemo ? '<span class="demo-tag">示例</span>' : ''}</b><span>${c.age ?? '—'}岁 · ${esc(c.edu || '—')} · ${esc(c.years || '')}</span></div></div></td>
       <td>${esc(c.school || '—')}${c.schoolTag ? ` <span class="tag t-red">${esc(c.schoolTag)}</span>` : ''}<div class="muted small">${esc(c.major || '')}</div></td>
       <td>${tagV(c.verdict)}</td><td><span class="score">${c.score ?? '—'}</span></td><td class="latest">${esc(c.reason || '')}${srcBadge(c.reasonBy)}</td>
       <td class="small">${esc(c.source || '')}<div class="muted">${esc((c.createdAt || '').slice(5, 16))}</div></td><td>${tagA(c.attend)}</td></tr>`).join('')
@@ -153,7 +153,7 @@ async function vPool(m) {
     `<div class="card"><div class="toolbar"><div class="seg">${['全部', ...ATTEND].map(t => `<button aria-pressed="${S.poolTab === t}" data-t="${t}">${t}<span class="c">${t === '全部' ? total : counts[t] || 0}</span></button>`).join('')}</div>
       <input class="search" id="q" placeholder="搜索姓名、学校、专业、岗位" value="${esc(S.q)}"></div>
     <div class="tbl-wrap"><table class="rowc"><thead><tr><th>候选人</th><th>岗位</th><th>初筛</th><th>来不来</th><th>面试安排</th><th>最新进展</th><th></th></tr></thead><tbody>
-    ${rows.length ? rows.map(c => `<tr data-id="${c.id}"><td><div class="cand"><span class="ava">${esc((c.name || '?')[0])}</span><div><b>${esc(c.name)}${c.isDemo ? '<span class="demo-tag">示例</span>' : ''}${c.handoff ? ' <span class="tag t-bad">转人工</span>' : ''}</b><span>${c.age ?? '—'}岁 · ${esc(c.edu || '—')} · ${esc(c.school || '')}</span></div></div></td>
+    ${rows.length ? rows.map(c => `<tr data-id="${c.id}"><td><div class="cand"><span class="ava">${esc((c.name || '?')[0])}</span><div><b>${esc(c.name)}${c.roleName && c.role !== 'teacher' ? ` <span class="tag t-info">${esc(c.roleName)}</span>` : ''}${c.isDemo ? '<span class="demo-tag">示例</span>' : ''}${c.handoff ? ' <span class="tag t-bad">转人工</span>' : ''}</b><span>${c.age ?? '—'}岁 · ${esc(c.edu || '—')} · ${esc(c.school || '')}</span></div></div></td>
       <td>${esc(c.job || '—')}<div class="muted small">${esc(c.source || '')}</div></td><td>${tagV(c.verdict)} <span class="score">${c.score ?? ''}</span></td><td>${tagA(c.attend)}</td><td>${when(c)}</td><td class="latest">${esc(c.lastNote || '')}</td><td><button class="btn sm">简历</button></td></tr>`).join('')
       : '<tr><td colspan="7"><div class="empty-state">没有符合条件的候选人</div></td></tr>'}</tbody></table></div></div></div>`;
   $$('[data-t]', m).forEach(b => b.onclick = () => { S.poolTab = b.dataset.t; vPool(m); });
@@ -173,7 +173,7 @@ async function renderDrawer() {
   const memo = [['来不来', tagA(c.attend)], ['面试时间', a ? `${esc(a.date)} ${esc(a.slot)}（${esc(a.status)}）` : esc(halfTxt(c.pref))], ['面试官', a?.interviewer ? `${esc(a.interviewer)}（${esc(a.desk)}）` : a ? '到场后由前台按空闲分配' : '—'],
     ['面试地点', esc(sch.place)], ['教师资格证', esc(c.slots.cert || (c.certs || []).join('、') || '未知')], ['最早到岗', esc(c.slots.arrive || '未知')], ['转人工', c.handoff ? '是' : '否']];
   root.innerHTML = `<div class="scrim" id="scrim"></div><aside class="drawer" role="dialog" aria-label="${esc(c.name)} 详情">
-    <div class="dh"><div class="dh-top"><span class="ava">${esc((c.name || '?')[0])}</span><div><h2>${esc(c.name)} ${tagA(c.attend)}</h2>
+    <div class="dh"><div class="dh-top"><span class="ava">${esc((c.name || '?')[0])}</span><div><h2>${esc(c.name)} ${tagA(c.attend)} <span class="tag t-info">${esc(c.roleName || '教师')}</span></h2>
       <div class="meta">${c.age ?? '—'}岁 · ${esc(c.edu || '—')} · ${esc(c.years || '')} · ${esc(c.careerStatus || '')}</div><div class="muted small">岗位 ${esc(c.job || '—')} · 来源 ${esc(c.source || '')}</div></div><button class="x" id="dx" aria-label="关闭">✕</button></div>
       <div class="dh-sum"><div>面试安排<b>${a ? `${esc(a.date.slice(5))} ${esc(a.slot)}${a.interviewer ? ' · ' + esc(a.interviewer) : ''}` : esc(halfTxt(c.pref))}</b></div><div>初筛<b><span class="score">${c.score ?? '—'}</span> 分 · ${esc(c.verdict || '')}</b></div><div>推荐理由<b style="font-size:12.5px;font-weight:500">${esc(c.reason || '')}</b></div></div>
       <div class="dtabs" role="tablist">${[['resume', '详细简历'], ['chat', '约聊记录'], ['tl', '时间线'], ['act', '操作']].map(([k, n]) => `<button role="tab" aria-selected="${S.dtab === k}" data-dt="${k}">${n}</button>`).join('')}</div></div>
@@ -353,20 +353,24 @@ async function fileText(f) {
   throw new Error(`不支持 .${ext} 文件`);
 }
 
+// knowledge-base document scope: all roles or one role
+const KB_ROLES = { all: '通用', teacher: '教师', xueguan: '学管师', zixun: '咨询师' };
+const roleSel = (id, v, attr = '') => `<select class="inp" ${id ? `id="${id}"` : ''} ${attr} style="width:auto">${Object.entries(KB_ROLES).map(([k, t]) => `<option value="${k}" ${k === (v || 'all') ? 'selected' : ''}>${t}</option>`).join('')}</select>`;
 async function vKb(m) {
   m.innerHTML = loading;
   const d = await api('/kb/docs');
   const L = d.learned;
   const st = d.stats;
   m.innerHTML = ph('知识库', `AI 回复候选人时只能使用这里的事实。共 ${st.docs} 份文档（启用 ${st.enabled}），${st.chars.toLocaleString()} 字，切成 ${st.passages} 段；每次回复只取与问题最相关的几段。`,
-    `<button class="btn" id="kb-learn">从历史约聊学习</button><button class="btn" id="kb-new">新建文字文档</button><button class="btn pri" id="kb-up">上传文档</button><input type="file" id="kb-file" multiple accept=".txt,.md,.csv,.docx,.pdf,.xlsx,.xls" hidden>`) + `
+    `<button class="btn" id="kb-learn">从历史约聊学习</button><button class="btn" id="kb-new">新建文字文档</button><span class="small muted">上传到</span>${roleSel('kb-uprole', 'all')}<button class="btn pri" id="kb-up">上传文档</button><input type="file" id="kb-file" multiple accept=".txt,.md,.csv,.docx,.pdf,.xlsx,.xls" hidden>`) + `
+  <p class="small muted" style="margin:-6px 0 12px">文档可以标注所属岗位：AI 回复某个岗位的候选人时，只参考“通用”和该岗位的资料。学管师、咨询师各有一份【模板】，填写后勾选“启用”即可。</p>
   <div id="kb-edit"></div>
   <div class="card" id="kb-drop" style="margin-bottom:16px;border:2px dashed var(--line);text-align:center;padding:22px;cursor:pointer"><b>把文档拖到这里，或点击选择文件</b><div class="small muted" style="margin-top:4px">支持 Word（.docx）、PDF、Excel（.xlsx/.xls）、txt、md、csv，可一次选多个。扫描版 PDF（图片）无法读取文字。不想让 AI 对外说的内容不要上传。</div><div id="kb-prog" class="small" style="margin-top:6px"></div></div>
   <div class="g3" style="grid-template-columns:minmax(0,1.4fr) minmax(0,1fr)">
-    <div class="card"><div class="card-h"><h3>文档</h3></div><div class="tbl-wrap"><table><thead><tr><th>标题</th><th>来源</th><th>字数</th><th>更新</th><th>启用</th><th></th></tr></thead><tbody>
-      ${d.docs.length ? d.docs.map(x => `<tr><td><b>${esc(x.title)}</b></td><td class="small muted">${esc(x.source || '')}</td><td class="num">${x.chars.toLocaleString()}</td><td class="small muted">${esc((x.updated_at || '').slice(5, 16))}</td>
+    <div class="card"><div class="card-h"><h3>文档</h3></div><div class="tbl-wrap"><table><thead><tr><th>标题</th><th>岗位</th><th>来源</th><th>字数</th><th>更新</th><th>启用</th><th></th></tr></thead><tbody>
+      ${d.docs.length ? d.docs.map(x => `<tr><td><b>${esc(x.title)}</b></td><td>${roleSel('', x.role, `data-rl="${x.id}"`)}</td><td class="small muted">${esc(x.source || '')}</td><td class="num">${x.chars.toLocaleString()}</td><td class="small muted">${esc((x.updated_at || '').slice(5, 16))}</td>
         <td><input type="checkbox" data-en="${x.id}" ${x.enabled ? 'checked' : ''}></td><td style="white-space:nowrap"><button class="btn sm" data-ed="${x.id}">编辑</button> <button class="btn sm" data-del="${x.id}">删除</button></td></tr>`).join('')
-        : '<tr><td colspan="6"><div class="empty-state">还没有文档。上传文档，或点“从历史约聊学习”自动整理常见问题。</div></td></tr>'}
+        : '<tr><td colspan="7"><div class="empty-state">还没有文档。上传文档，或点“从历史约聊学习”自动整理常见问题。</div></td></tr>'}
     </tbody></table></div></div>
     <div class="card"><div class="card-h"><h3>检索测试</h3><span class="sub">输入候选人可能问的话，看 AI 会参考哪几段</span></div><div class="card-b">
       <div class="inline-form"><input class="inp" id="kb-q" placeholder="例如：你们几点下班？有五险一金吗？"><button class="btn" id="kb-qgo">查找</button></div><div id="kb-qres" class="small" style="margin-top:8px"></div></div></div>
@@ -391,7 +395,7 @@ async function vKb(m) {
       try {
         const text = (await fileText(f)).replace(/\n{3,}/g, '\n\n').trim();
         if (!text) throw new Error('没有读到文字（可能是扫描件）');
-        await api('/kb/docs', { body: { title: f.name.replace(/\.[^.]+$/, ''), content: text, source: `文件 .${f.name.split('.').pop()}` } });
+        await api('/kb/docs', { body: { title: f.name.replace(/\.[^.]+$/, ''), content: text, source: `文件 .${f.name.split('.').pop()}`, role: $('#kb-uprole').value } });
         ok++;
       } catch (e) { toast(`${f.name}：${e.message}`); await sleep(1500); }
     }
@@ -408,12 +412,13 @@ async function vKb(m) {
   const editor = (doc = { title: '', content: '' }) => {
     $('#kb-edit').innerHTML = `<div class="card" style="margin-bottom:16px"><div class="card-h"><h3>${doc.id ? '编辑文档' : '新建文字文档'}</h3></div><div class="card-b">
       <label class="fi full">标题<input class="inp" id="ke-t" value="${esc(doc.title)}" placeholder="例如：薪资福利说明"></label>
+      <label class="fi" style="margin-top:8px">所属岗位 ${roleSel('ke-r', doc.role)}</label>
       <label class="fi full" style="margin-top:8px">内容（可直接粘贴整篇）<textarea class="inp" id="ke-c" style="min-height:380px;line-height:1.7">${esc(doc.content)}</textarea></label>
       <div class="inline-form"><button class="btn pri" id="ke-save">保存</button><button class="btn" id="ke-cancel">取消</button><span class="small muted" id="ke-n">${doc.content.length.toLocaleString()} 字</span></div></div></div>`;
     $('#ke-c').oninput = () => { $('#ke-n').textContent = `${$('#ke-c').value.length.toLocaleString()} 字`; };
     $('#ke-cancel').onclick = () => { $('#kb-edit').innerHTML = ''; };
     $('#ke-save').onclick = async () => {
-      const body = { title: $('#ke-t').value.trim(), content: $('#ke-c').value };
+      const body = { title: $('#ke-t').value.trim(), content: $('#ke-c').value, role: $('#ke-r').value };
       if (!body.content.trim()) return toast('内容不能为空');
       try { await api(doc.id ? `/kb/docs/${doc.id}` : '/kb/docs', { method: doc.id ? 'PATCH' : 'POST', body }); toast('已保存，AI 下一条回复起生效'); vKb(m); } catch (e) { toast(e.message); }
     };
@@ -422,6 +427,7 @@ async function vKb(m) {
   $('#kb-new').onclick = () => editor();
   $$('[data-ed]', m).forEach(b => b.onclick = async () => editor(await api(`/kb/docs/${b.dataset.ed}`)));
   $$('[data-del]', m).forEach(b => b.onclick = async () => { if (!confirm('删除这份文档？')) return; await api(`/kb/docs/${b.dataset.del}`, { method: 'DELETE' }); toast('已删除'); vKb(m); });
+  $$('[data-rl]', m).forEach(s => s.onchange = async () => { await api(`/kb/docs/${s.dataset.rl}`, { method: 'PATCH', body: { role: s.value } }); toast(`已标为：${KB_ROLES[s.value]}`); });
   $$('[data-en]', m).forEach(b => b.onchange = async () => { await api(`/kb/docs/${b.dataset.en}`, { method: 'PATCH', body: { enabled: b.checked } }); toast(b.checked ? '已启用' : '已停用，AI 不再参考这份文档'); });
 
   const search = async () => {
@@ -451,7 +457,7 @@ async function vKb(m) {
 async function vSettings(m) {
   m.innerHTML = loading;
   const [st, ivs] = await Promise.all([api('/settings'), api('/interviewers')]);
-  const R = st.rules, SC = st.schedule, AI = st.ai, ORG = st.org, AR = st.autoReply;
+  const R = st.rules, SC = st.schedule, AI = st.ai, ORG = st.org, AR = st.autoReply, RO = st.roles || {};
   const MODES = { auto: '全自动', semi: '半自动', human: '转人工' };
   const AR_CATS = { '投递-符合': '主动投递、初筛符合 → 感谢并邀约初试', '投递-不符合': '主动投递、初筛不符合 → 礼貌婉拒', '投递-待确认': '主动投递、简历信息不全 → 先问关键信息',
     提问: '学校在哪？上几节课？', 提供信息: '有初中数学教资，2 月能到岗', 约面时间: '明天下午可以去面试', 确认参加: '好的，我会准时到',
@@ -482,6 +488,22 @@ async function vSettings(m) {
       <label class="fi">意向型最低学历<select id="r-ie">${['大专', '本科', '硕士'].map(x => `<option ${x === (R.intentMinEdu || '本科') ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
       <label class="fi full">求职方向关键词（命中任一即算教师类，逗号分隔）<input id="r-ik" value="${esc((R.intentKeywords || []).join('，'))}"></label></div>
       <div class="inline-form"><button class="btn pri" id="r-save">保存</button><button class="btn" id="r-re">按新规则重新初筛全部</button></div></div></div>
+    <div class="card" id="roles-card"><div class="card-h"><h3>岗位配置</h3><span class="sub">按平台上的职位名自动识别岗位；每个岗位有自己的初筛规则、约聊要了解的问题和沟通要点</span></div><div class="card-b">
+      ${Object.entries(RO).map(([k, r]) => `<details class="role-box" style="border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-bottom:10px" ${k === 'teacher' ? '' : 'open'}>
+        <summary style="cursor:pointer;font-weight:600">${esc(r.name)}${k === 'teacher' ? '<span class="small muted">（初筛规则见上方“初筛规则”）</span>' : ''}</summary>
+        <div class="grid-form" style="margin-top:8px">
+          ${k === 'teacher' ? '' : `<label class="fi full" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" data-ro-en="${k}" style="width:auto" ${r.enabled !== false ? 'checked' : ''}>启用这个岗位</label>`}
+          <label class="fi full">职位名包含这些词就算这个岗位（逗号分隔）<input data-ro-jk="${k}" value="${esc((r.jobKeywords || []).join('，'))}"></label>
+          ${r.rules ? `<label class="fi">年龄上限<input type="number" data-ro-age="${k}" value="${esc(r.rules.maxAge ?? 35)}"></label>
+          <label class="fi">最低学历<select data-ro-edu="${k}">${['大专', '本科', '硕士'].map(x => `<option ${x === (r.rules.minEdu || '大专') ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+          <label class="fi">意向型年龄上限（没经验但求职方向对口）<input type="number" data-ro-young="${k}" value="${esc(r.rules.youngMaxAge ?? 28)}"></label>
+          <label class="fi full">相关经历关键词（职位或公司名命中即算有经验）<input data-ro-exp="${k}" value="${esc((r.rules.expKeywords || []).join('，'))}"></label>
+          <label class="fi full">相关专业关键词（加分）<input data-ro-major="${k}" value="${esc((r.rules.majorKeywords || []).join('，'))}"></label>
+          <label class="fi full">求职方向关键词<input data-ro-intent="${k}" value="${esc((r.rules.intentKeywords || []).join('，'))}"></label>` : ''}
+          <label class="fi full">约聊时依次了解（一行一个问题，AI 每条消息最多问一个）<textarea data-ro-q="${k}" style="min-height:96px">${esc((r.questions || []).map(q => q[1]).join('\n'))}</textarea></label>
+          <label class="fi full">岗位沟通要点（工作内容、要突出什么、要确认什么）<textarea data-ro-focus="${k}" style="min-height:80px">${esc(r.focus || '')}</textarea></label>
+        </div></details>`).join('')}
+      <div class="inline-form"><button class="btn pri" id="ro-save">保存岗位配置</button><button class="btn" id="ro-re">保存并按新规则重新初筛全部</button></div></div></div>
     <div class="card" id="ar-card"><div class="card-h"><h3>约聊回复方式</h3><span class="sub">候选人每条消息先由 AI 分类，再按分类处理</span></div><div class="card-b">
       <label class="fi full" style="flex-direction:row;gap:8px;align-items:center;font-size:14px"><input type="checkbox" id="ar-on" style="width:auto" ${AR.enabled ? 'checked' : ''}><b>开启全自动回复</b><span class="small muted">（关闭时，设为“全自动”的分类也只给建议）</span></label>
       <table class="tbl" style="margin:10px 0"><thead><tr><th>消息分类</th><th>示例</th><th>处理方式</th></tr></thead><tbody>
@@ -541,6 +563,24 @@ async function vSettings(m) {
       repeatLimit: Math.max(2, +$('#ar-rep').value || 2), autoInvite: $('#ar-inv').checked };
   };
   $('#ar-save').onclick = () => save({ autoReply: arBody() }, $('#ar-on').checked ? '已保存：全自动回复已开启' : '已保存');
+  // roles: questions keep their field key when the wording is unchanged or by position
+  const roBody = () => {
+    const out = {};
+    for (const [k, r] of Object.entries(RO)) {
+      const v = a => $(`[${a}="${k}"]`, m);
+      const lines = v('data-ro-q').value.split('\n').map(x => x.trim()).filter(Boolean);
+      const old = r.questions || [];
+      const questions = lines.map((q, i) => [(old.find(o => o[1] === q) || old[i] || [`q${i + 1}`])[0], q]);
+      const o = { ...r, jobKeywords: list(v('data-ro-jk').value), questions, focus: v('data-ro-focus').value.trim() };
+      if (v('data-ro-en')) o.enabled = v('data-ro-en').checked;
+      if (r.rules) o.rules = { ...r.rules, maxAge: +v('data-ro-age').value || 35, minEdu: v('data-ro-edu').value, youngMaxAge: +v('data-ro-young').value || 28,
+        expKeywords: list(v('data-ro-exp').value), majorKeywords: list(v('data-ro-major').value), intentKeywords: list(v('data-ro-intent').value) };
+      out[k] = o;
+    }
+    return out;
+  };
+  $('#ro-save').onclick = () => save({ roles: roBody() }, '岗位配置已保存');
+  $('#ro-re').onclick = async () => { await save({ roles: roBody() }); const r = await api('/settings/rescreen', { body: {} }); toast(`已按新规则重新初筛 ${r.rescreened} 人`); };
   $('#o-save').onclick = () => save({ org: orgBody(), autoReply: arBody() });
   $$('[data-go]', m).forEach(b => b.onclick = () => go(b.dataset.go));
   $('#r-re').onclick = async () => { await $('#r-save').onclick(); const r = await api('/settings/rescreen', { body: {} }); toast(`已按新规则重新初筛 ${r.rescreened} 人`); };

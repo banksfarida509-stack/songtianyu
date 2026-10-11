@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { nowCN, s, j, randomToken } from './util.js';
+import { DEFAULT_ROLES, ROLE_KB_TEMPLATES } from './roles.js';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS candidates (
@@ -99,6 +100,8 @@ export const DEFAULT_SETTINGS = {
   },
   // 知识库（整段粘贴，AI 回复只能用这里和下面问答里的事实）
   kbDoc: '',
+  // 岗位：教师 / 学管师 / 咨询师 — 初筛规则、约聊要了解的问题、沟通要点（教师的初筛仍用上面的 rules）
+  roles: DEFAULT_ROLES,
   // 我的沟通话术：从历史约聊中学到的沟通逻辑和说法，AI 回复时模仿（可在后台修改）
   playbook: { enabled: true, text: '', at: '' },
   kb: [
@@ -121,6 +124,14 @@ export function openDb(file) {
   // topic of each candidate question (薪资 / 作息时间 …) — used to spot a question asked twice
   const mcols = db.prepare('PRAGMA table_info(messages)').all().map(c => c.name);
   if (!mcols.includes('topic')) db.exec('ALTER TABLE messages ADD COLUMN topic TEXT');
+  // job roles: each candidate and each knowledge-base document belongs to a role (通用 = all)
+  if (!db.prepare('PRAGMA table_info(candidates)').all().some(c => c.name === 'role')) db.exec("ALTER TABLE candidates ADD COLUMN role TEXT NOT NULL DEFAULT 'teacher'");
+  if (!db.prepare('PRAGMA table_info(kb_docs)').all().some(c => c.name === 'role')) db.exec("ALTER TABLE kb_docs ADD COLUMN role TEXT NOT NULL DEFAULT 'all'");
+  for (const [role, title, content] of ROLE_KB_TEMPLATES) {
+    if (!db.prepare('SELECT 1 FROM kb_docs WHERE title=?').get(title)) {
+      db.prepare('INSERT INTO kb_docs(title,source,content,enabled,role,created_at,updated_at) VALUES(?,?,?,0,?,?,?)').run(title, '模板', content, role, nowCN(), nowCN());
+    }
+  }
   // the single pasted knowledge-base text becomes the first document
   const pasted = db.prepare("SELECT value FROM settings WHERE key='kbDoc'").get();
   const pastedText = pasted ? j(pasted.value, '') : '';
