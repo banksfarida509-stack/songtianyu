@@ -58,6 +58,19 @@
   const UI_WORDS = new Set(['沟通', '全部', '新招呼', '未读', '已读', '在线', '消息', '职位', '聊天', '牛人', '推荐', '搜索', '互动', '设置', '我的', '工具', '道具',
     '仅沟通', '有交换', '有面试', '收藏', '更多', '筛选', '批量', '标记', '置顶', '不合适', '刚刚', '昨天', '今天', '星期', '附件简历', '在线简历', '沟通职位', '发送', '招聘']);
   const nameIn = s => String(s || '').split(/[\s|·•,，:：()（）]+/).find(w => /^[一-龥]{2,6}$/.test(w) && !UI_WORDS.has(w) && !/老师$|教师$|先生$|女士$/.test(w) || /^[一-龥](先生|女士)$/.test(w)) || '';
+  // the name shown in a row. Name and job title sit in separate elements but their text
+  // runs together (“付丽莉行政教务老师”), so look at the smallest text elements first.
+  function rowName(row) {
+    if (!row) return '';
+    const byClass = row.querySelector('[class*="name"]:not([class*="job"]):not([class*="position"])');
+    if (byClass) { const t = textOf(byClass), n = nameIn(t); if (n && t.startsWith(n)) return n; }
+    for (const leaf of row.querySelectorAll('span, div, p, b, em, i, strong')) {
+      if (leaf.children.length) continue;
+      const t = textOf(leaf), n = nameIn(t);
+      if (n && n === t) return n;
+    }
+    return nameIn(textOf(row));
+  }
   // the conversation list on the left: the largest group of same-class siblings that hold a name
   function listRows() {
     const groups = new Map();
@@ -70,13 +83,10 @@
     }
     let best = [];
     for (const kids of groups.values()) {
-      const named = kids.filter(k => visible(k) && nameIn(textOf(k)));
+      const named = kids.filter(k => visible(k) && rowName(k));
       if (named.length >= 2 && named.length > best.length) best = named;
     }
-    return best.map(row => {
-      const nameEl = row.querySelector('[class*="name"]');
-      return { row, name: nameIn(textOf(nameEl)) || nameIn(textOf(row)), top: row.getBoundingClientRect().top };
-    }).filter(x => x.name);
+    return best.map(row => ({ row, name: rowName(row), top: row.getBoundingClientRect().top })).filter(x => x.name);
   }
   // current conversation: the chat header's name, else the highlighted row of the left list
   function currentName() {
@@ -185,7 +195,7 @@
       let row = b;
       for (let k = 0; k < 12 && row && (row.getBoundingClientRect().height < 50 || !/[一-龥]{2,}/.test(textOf(row))); k++) row = row.parentElement;
       if (!row || row.getBoundingClientRect().height > 160) continue;
-      const name = nameIn(textOf(row.querySelector('[class*="name"]'))) || nameIn(textOf(row));
+      const name = rowName(row);
       if (name && !rows.some(r => r.name === name)) rows.push({ row, name, top: row.getBoundingClientRect().top });
     }
     return rows.sort((a, b) => a.top - b.top);
