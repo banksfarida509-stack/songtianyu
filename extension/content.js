@@ -9,7 +9,7 @@
   const toMain = (type, data = {}) => window.postMessage({ __hra: 'iso', type, ...data }, location.origin);
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-  const S = { results: {}, job: '', err: '', risk: false, greeting: false, stop: false, confirmGreet: false, log: [], chat: null, draft: null, candidateId: null, busy: false, collapsed: false, lastSuggestSig: '' };
+  const S = { results: {}, job: '', err: '', risk: false, greeting: false, stop: false, confirmGreet: false, target: 10, done: 0, phase: '', log: [], chat: null, draft: null, candidateId: null, busy: false, collapsed: false, lastSuggestSig: '' };
   const log = m => { S.log.unshift(`${new Date().toTimeString().slice(0, 8)} ${m}`); S.log = S.log.slice(0, 30); draw(); };
 
   // ---------- panel ----------
@@ -37,9 +37,11 @@
       body += `<div class="hra-stats"><div><b>${all.length}</b>已初筛</div><div><b>${n('推荐')}</b>推荐</div><div><b>${n('待确认')}</b>待确认</div><div><b>${n('不推荐')}</b>不推荐</div></div>`;
       body += `<div class="hra-sub">推荐顺序（${esc(S.job || '当前岗位')}）</div><div class="hra-rank">${rk.length ? rk.slice(0, 12).map(r => `<div class="hra-ri" data-uid="${esc(r.uid)}"><b>${r.score}</b><span>${esc(r.name || '')}<i>${esc(r.reason || '')}</i></span><em>${r.greeted ? '已打招呼' : ''}</em></div>`).join('') : '<p class="hra-muted">暂无推荐的人。滚动页面加载更多，插件会自动读取。</p>'}</div>`;
       body += S.greeting
-        ? `<button class="hra-btn" data-a="stop">停止打招呼</button>`
+        ? `<p class="hra-muted">正在打招呼：已完成 ${S.done} / ${S.target}${S.phase ? ' · ' + esc(S.phase) : ''}</p><button class="hra-btn" data-a="stop">停止打招呼</button>`
         : S.confirmGreet
-          ? `<p class="hra-muted">将按顺序给 ${rk.filter(r => !r.greeted).length} 位推荐候选人点“打招呼”，每位间隔 15–30 秒，会消耗平台打招呼次数。</p><div class="hra-row"><button class="hra-btn pri" data-a="greet-go">确认开始</button><button class="hra-btn" data-a="greet-cancel">取消</button></div>`
+          ? `<p class="hra-muted">按 AI 推荐顺序打招呼，当前页推荐 ${rk.filter(r => !r.greeted).length} 位未打招呼；不够时自动往下加载更多。每位间隔 15–30 秒，会消耗平台打招呼次数。</p>
+             <div class="hra-row"><label class="hra-muted">本次打 <input id="hra-n" type="number" min="1" max="100" value="${S.target || 10}" style="width:56px"> 位</label></div>
+             <div class="hra-row"><button class="hra-btn pri" data-a="greet-go">确认开始</button><button class="hra-btn" data-a="greet-cancel">取消</button></div>`
           : `<button class="hra-btn pri" data-a="greet" ${rk.some(r => !r.greeted) && !S.risk ? '' : 'disabled'}>按推荐顺序打招呼</button>`;
     }
     if (isIm()) {
@@ -68,6 +70,8 @@
   }
   function bind() {
     panel.querySelectorAll('[data-a]').forEach(b => b.onclick = () => act(b.dataset.a));
+    const nIn = panel.querySelector('#hra-n');
+    if (nIn) nIn.oninput = () => { S.target = parseInt(nIn.value, 10) || S.target; };
     panel.querySelectorAll('.hra-ri').forEach(el => el.onclick = () => {
       const card = document.querySelector(`[data-hra-uid="${CSS.escape(el.dataset.uid)}"]`);
       card && card.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -77,7 +81,11 @@
     if (a === 'toggle') { S.collapsed = !S.collapsed; return draw(); }
     if (a === 'greet') { S.confirmGreet = true; return draw(); }
     if (a === 'greet-cancel') { S.confirmGreet = false; return draw(); }
-    if (a === 'greet-go') { S.confirmGreet = false; return greetLoop(); }
+    if (a === 'greet-go') {
+      const n = parseInt(panel.querySelector('#hra-n')?.value, 10);
+      S.target = Math.max(1, Math.min(100, n || 10));
+      S.confirmGreet = false; return greetLoop();
+    }
     if (a === 'stop') { S.stop = true; return; }
     if (a === 'suggest') return suggest(true);
     if (a === 'fill' && S.draft) { toMain('fill', { text: S.draft.reply }); return; }
@@ -119,21 +127,38 @@
       el.classList.toggle('hra-v-ok', cls === 'ok'); el.classList.toggle('hra-v-warn', cls === 'warn'); el.classList.toggle('hra-v-no', cls === 'no');
     }
   }
+  // Greets up to S.target recommended candidates; when the loaded list runs
+  // out it asks the page to load more (up to 4 tries without new 推荐).
   async function greetLoop() {
-    S.greeting = true; S.stop = false; draw();
-    for (const r of rank()) {
-      if (S.stop || S.risk) break;
-      if (S.results[r.uid].greeted) continue;
+    S.greeting = true; S.stop = false; S.done = 0; S.phase = ''; draw();
+    const skip = new Set();
+    let dry = 0, why = '';
+    while (S.done < S.target && !S.stop && !S.risk) {
+      const r = rank().find(x => !x.greeted && !skip.has(x.uid));
+      if (!r) {
+        if (++dry > 4) { why = '当前岗位已没有更多 AI 推荐的候选人'; break; }
+        S.phase = '加载更多候选人…'; draw();
+        toMain('more');
+        for (let t = 0; t < 6000 && !S.stop; t += 500) await sleep(500);
+        continue;
+      }
+      dry = 0; S.phase = `正在给 ${r.name} 打招呼`; draw();
       document.querySelector(`[data-hra-uid="${CSS.escape(r.uid)}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       await sleep(1200);
-      const res = await new Promise(ok => { const h = e => { if (e.data?.__hra === 'main' && e.data.type === 'greetResult' && e.data.data.uid === r.uid) { window.removeEventListener('message', h); ok(e.data.data); } }; window.addEventListener('message', h); toMain('greet', { uid: r.uid }); setTimeout(() => ok({ ok: false, msg: '超时' }), 10000); });
+      const res = await new Promise(ok => { const h = e => { if (e.data?.__hra === 'main' && e.data.type === 'greetResult' && e.data.data.uid === r.uid) { window.removeEventListener('message', h); ok(e.data.data); } }; window.addEventListener('message', h); toMain('greet', { uid: r.uid }); setTimeout(() => ok({ ok: false, msg: '超时' }), 12000); });
       log(`${r.name}：${res.msg}`);
-      if (res.ok) { S.results[r.uid].greeted = true; paintLines(); draw(); }
-      if (res.dialog || res.unverified || !isRec()) { S.stop = true; break; }
+      if (res.ok) { S.results[r.uid].greeted = true; if (!/已沟通过/.test(res.msg)) S.done++; paintLines(); draw(); }
+      else skip.add(r.uid);
+      if (res.dialog || res.unverified || !isRec()) { S.stop = true; why = '需要人工处理（见上一条日志）'; break; }
+      if (S.done >= S.target) break;
+      if (/已沟通过/.test(res.msg)) continue;
       const wait = 15000 + Math.random() * 15000;
+      S.phase = `等待 ${Math.round(wait / 1000)} 秒后继续`; draw();
       for (let t = 0; t < wait && !S.stop && !S.risk; t += 500) await sleep(500);
     }
-    S.greeting = false; log(S.risk ? '因平台风控提示停止' : S.stop ? '已手动停止' : '推荐候选人已全部打招呼'); draw();
+    S.greeting = false; S.phase = '';
+    log(S.risk ? '因平台风控提示停止' : why ? `停止：${why}（本次成功 ${S.done} 位）` : S.stop ? `已手动停止（本次成功 ${S.done} 位）` : `完成：本次成功打招呼 ${S.done} 位`);
+    draw();
   }
 
   // ---------- chat: suggestion ----------

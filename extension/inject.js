@@ -114,7 +114,20 @@
     const d = [...document.querySelectorAll('.km-modal, .km-dialog, [role="dialog"], .el-dialog, .km-popover')].find(visible);
     return d ? (d.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 80) : '';
   }
+  // After a greeting the platform may pop a "去聊天 / 继续推荐" prompt. Choosing
+  // to stay on the list is safe (it sends nothing), so we click it ourselves.
+  const STAY_RE = /^(继续推荐|继续浏览|继续看推荐|留在当前页|留在此页|暂不沟通|稍后再聊|我知道了|知道了)$/;
+  function clickStay() {
+    const b = [...document.querySelectorAll('button, .km-button, a, span, div')]
+      .filter(e => visible(e) && e.children.length <= 2 && STAY_RE.test((e.innerText || '').trim()));
+    const inner = b.filter(x => !b.some(o => o !== x && x.contains(o)));
+    const t = inner.find(e => e.tagName === 'BUTTON') || inner[0];
+    if (!t) return '';
+    realClick(t);
+    return t.innerText.trim();
+  }
   async function greet(uid) {
+    if (clickStay()) await wait(800);
     const el = document.querySelector(`[data-hra-uid="${CSS.escape(uid)}"]`);
     if (!el) return post('greetResult', { uid, ok: false, msg: '卡片已不在页面上（翻页或刷新了）' });
     const scope = el.closest('.recommend-item') || el;
@@ -125,6 +138,9 @@
     const desc = `${btn.tagName.toLowerCase()}.${String(btn.className || '').split(/\s+/).slice(0, 2).join('.')}`;
     realClick(btn);
     await wait(1500);
+    let stayed = '';
+    for (let k = 0; k < 4 && !stayed; k++) { stayed = clickStay(); if (!stayed) await wait(400); }
+    if (stayed) { await wait(900); return post('greetResult', { uid, ok: true, msg: `打招呼成功（已自动点「${stayed}」）` }); }
     const dlg = openDialogText();
     if (dlg) return post('greetResult', { uid, ok: false, dialog: true, msg: `点了打招呼，平台弹出窗口：「${dlg}」——请手动处理，已暂停` });
     // verify: the label should change to 继续沟通 (or the page jumps to chat)
@@ -145,6 +161,16 @@
     if (d.type === 'fill') fill(d.text);
     if (d.type === 'native') clickNative(d.name);
     if (d.type === 'greet') greet(d.uid);
+    if (d.type === 'more') {
+      // load the next batch of recommend cards (infinite scroll)
+      clickStay();
+      const els = document.querySelectorAll('.recommend-item__inner');
+      els.length && els[els.length - 1].scrollIntoView({ block: 'end' });
+      window.scrollBy(0, 2000);
+      document.querySelectorAll('*').forEach(e => { if (e.scrollHeight > e.clientHeight + 200 && /(auto|scroll)/.test(getComputedStyle(e).overflowY)) e.scrollTop = e.scrollHeight; });
+      const more = [...document.querySelectorAll('button, a, div, span')].find(e => visible(e) && e.children.length <= 1 && /^(加载更多|查看更多|换一批)$/.test((e.innerText || '').trim()));
+      more && more.click();
+    }
     if (d.type === 'reread') { lastSig = ''; lastChatSig = ''; tick(); }
   });
 
