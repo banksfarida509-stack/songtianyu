@@ -25,7 +25,7 @@ export function normalizeZhaopin(raw) {
   }));
   const edus = (raw.educationExperiences || []).slice(0, 4).map(e => ({
     t: [e.beginDate, e.endDate].filter(Boolean).join('-'),
-    school: clip(e.schoolName, 60), major: clip(e.majorName, 40), deg: clip(e.educationLevel, 10), tag: clip(e.schoolTag, 20),
+    school: clip(e.schoolName, 60), major: clip(e.majorName, 40), deg: clip(e.educationLevel, 10), tag: clip(e.schoolTag, 20), mode: clip(e.mode, 30),
   }));
   const top = edus[0] || {};
   return {

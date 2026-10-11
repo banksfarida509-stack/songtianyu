@@ -27,6 +27,15 @@
     else if (typeof v === 'object') for (const [k, x] of Object.entries(v)) if (!/id$|code|num|url|img|avatar|phone|mobile/i.test(k)) texts(x, d + 1, out);
     return out;
   }
+  // how a degree was studied (统招 / 全日制 / 自考 / 成人 / 函授 …), from whatever field carries it
+  function eduMode(e) {
+    const out = [];
+    for (const [k, v] of Object.entries(e || {})) {
+      if (typeof v === 'string' && v.length <= 20 && /统招|全日制|非统招|自考|成人|函授|网络|业余|非全日制|开放|夜大/.test(v)) out.push(v);
+      else if (typeof v === 'boolean' && /unif|tongzhao|fulltime|full_time|statutory|recruit/i.test(k)) out.push(v ? '统招' : '非统招');
+    }
+    return out.join(' ').slice(0, 30);
+  }
   // whitelist: no avatar, phone, ids beyond resumeNumber
   function pick(c) {
     return {
@@ -35,7 +44,7 @@
       workYears: c.workYears, workYearsLabel: c.workYearsLabel, careerStatus: c.careerStatus, desiredSalary: c.desiredSalary,
       cityLabel: c.cityLabel, desiredJobType: typeof c.desiredJobType === 'string' ? c.desiredJobType : '',
       workExperiences: pickArr(c.workExperiences, 6, w => ({ beginDate: w.beginDate, endDate: w.endDate, companyName: w.companyName, jobTitle: w.jobTitle, jobSubTitle: w.jobSubTitle })),
-      educationExperiences: pickArr(c.educationExperiences, 4, e => ({ beginDate: e.beginDate, endDate: e.endDate, schoolName: e.schoolName, majorName: e.majorName, educationLevel: e.educationLevel, schoolTag: e.schoolTag })),
+      educationExperiences: pickArr(c.educationExperiences, 4, e => ({ beginDate: e.beginDate, endDate: e.endDate, schoolName: e.schoolName, majorName: e.majorName, educationLevel: e.educationLevel, schoolTag: e.schoolTag, mode: eduMode(e) })),
       skillTags: pickArr(c.skillTags, 12, x => String(x)), certificateNames: pickArr(c.certificateNames, 10, x => String(x)),
       selfEvaluation: typeof c.selfEvaluation === 'string' ? c.selfEvaluation.slice(0, 400) : '',
     };

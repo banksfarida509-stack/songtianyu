@@ -4,7 +4,7 @@
 import { chat, parseJson, llmConfigured } from './llm.js';
 import { clip, todayCN, addDays } from './util.js';
 import { retrieve, TOPICS, TOPIC_WORDS } from './kb.js';
-import { DEFAULT_ROLES } from './roles.js';
+import { DEFAULT_ROLES, eduSalesOf } from './roles.js';
 
 // ---- platform blocking rules (taken from 智联 chat page im.riskRules, subset) ----
 export const PLATFORM_RISK = [
@@ -73,7 +73,7 @@ export function decideMode(draft, { autoReply, override, nowHM, sentLastHour }) 
   if (want === 'human') return { mode: 'human', why: `${src}转人工` };
   if (want === 'semi') return { mode: 'semi', why: `${src}半自动` };
   // without the LLM the canned reply cannot answer free questions; only fixed-flow intents may go out alone
-  if (draft.byAi === false && !['约面时间', '确认参加', '改期', '拒绝', '交换联系方式', '投递-符合', '投递-不符合', '投递-待确认'].includes(draft.intent)) return { mode: 'semi', why: 'AI 暂不可用，规则回复不自动发' };
+  if (draft.byAi === false && !draft.declineTz && !['约面时间', '确认参加', '改期', '拒绝', '交换联系方式', '投递-符合', '投递-不符合', '投递-待确认'].includes(draft.intent)) return { mode: 'semi', why: 'AI 暂不可用，规则回复不自动发' };
   if (!ar.enabled) return { mode: 'semi', why: '全自动总开关未打开' };
   const [h0, h1] = ar.hours || ['00:00', '23:59'];
   if (nowHM < h0 || nowHM > h1) return { mode: 'semi', why: `不在自动回复时段（${h0}–${h1}）` };
@@ -239,6 +239,8 @@ ${docText || '（无相关段落）'}
     if (/上午/.test(lastText)) newSlots.half = 'am'; else if (/下午/.test(lastText)) newSlots.half = 'pm';
     if (/明天/.test(lastText)) newSlots.day = tomorrow;
     if (/离职|辞职|没上班|待业/.test(lastText)) newSlots.employed = '离职'; else if (/在职|还在上班|在上班/.test(lastText)) newSlots.employed = '在职'; else if (/应届|刚毕业|在读/.test(lastText)) newSlots.employed = '应届';
+    const nonTz = lastText.match(/非统招|不是统招|自考|成人(教育|高考)?|函授|网络教育|业余|非全日制|开放大学/);
+    if (nonTz) newSlots.tongzhao = nonTz[0]; else if (/统招|全日制/.test(lastText)) newSlots.tongzhao = '统招';
     const subj = lastText.match(/(初中|高中|小学)?(数学|语文|英语|物理|化学|生物|历史|地理|政治|道法|科学)/);
     if (subj && /教|老师|想|带|科|做/.test(lastText)) newSlots.subject = subj[0];
     const start = lastText.match(/(随时|马上|下周[一二三四五六日]?|下个月|月底|月初|\d{1,2}月\d{0,2}号?|\d{1,2}号|过完年|年后)/);
@@ -247,7 +249,14 @@ ${docText || '（无相关段落）'}
     if (live) newSlots.live = live[1];
   }
 
-  let reply = ai?.reply ? String(ai.reply) : '';
+  // the candidate said the degree is not 统招, and the role requires it (no exception applies) → decline politely
+  const RR = role.rules || {};
+  const tzAns = String(newSlots.tongzhao || '');
+  const saysNonTz = /非统招|不是统招|自考|成人|函授|网络教育|业余|非全日制|开放大学|^否|^不是/.test(tzAns);
+  const workList = candidate.work || (() => { try { return JSON.parse(candidate.work_json || '[]'); } catch { return []; } })();
+  const declineTz = RR.requireTongzhao && saysNonTz && !(RR.eduSalesException && eduSalesOf(workList));
+  if (declineTz) intent = '投递-不符合';
+  let reply = ai?.reply && !declineTz ? String(ai.reply) : '';
   let action = null, slot = null, handoff = false, handoffWhy = null, stateChange = null;
 
   if (intent === '投递-不符合') {
@@ -325,7 +334,7 @@ ${docText || '（无相关段落）'}
 
   reply = clip(reply, 200);
   return {
-    intent, topic, asked, reply, parts: splitHuman(reply), slots: newSlots, action, slot, byAi: !!ai, aiError: ai ? null : clip(err || '', 160),
+    intent, topic, asked, reply, parts: splitHuman(reply), slots: newSlots, action, slot, byAi: !!ai, aiError: ai ? null : clip(err || '', 160), declineTz,
     sources: passages.map(p => ({ title: p.title, text: clip(p.text, 80) })),
     checks: { guard: guardHits, platform: risk.platform }, blocked,
     handoff, handoffWhy, stateChange, model: model || (err ? `规则回退（${clip(err, 80)}）` : '规则回退（未配置 AI）'),

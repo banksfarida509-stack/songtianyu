@@ -9,7 +9,7 @@ import { openDb, getSetting, setSetting, addEvent } from './db.js';
 import { normalizeZhaopin, screen } from './rules.js';
 import { polishReasons, suggestReply, riskCheck, decideMode, guessTopic } from './ai.js';
 import { retrieve, kbStats, learnFromChats } from './kb.js';
-import { roleFor, screenRole, ROLE_KEYS } from './roles.js';
+import { roleFor, screenRole, ROLE_KEYS, tongzhaoOf, eduSalesOf } from './roles.js';
 import { llmConfigured, chat } from './llm.js';
 import { findSlot, book, autoSchedule, interviewerStatus, workDays, activeAppt, halfOf } from './schedule.js';
 import { todayCN, nowCN, j, s, clip, weekday, WEEK, randomToken } from './util.js';
@@ -299,6 +299,15 @@ route('POST', '/api/ext/chat/suggest', 'ext', async (req, res) => {
   }
   const role = roleOf(b.job || c.job);
   if (c.role !== role.key) db.prepare('UPDATE candidates SET role=? WHERE id=?').run(role.key, c.id);
+  // 统招 already known from the resume (or not required thanks to education-sales experience): don't ask in chat
+  if (role.rules?.requireTongzhao) {
+    const sl = j(c.slots_json, {});
+    if (!sl.tongzhao) {
+      const tz = tongzhaoOf(j(c.edu_json, []), role.rules.minEdu);
+      const v = role.rules.eduSalesException && eduSalesOf(j(c.work_json, [])) ? '不要求（有教育行业销售经验）' : tz === true ? '统招' : tz === false ? '非统招' : null;
+      if (v) { sl.tongzhao = v; db.prepare('UPDATE candidates SET slots_json=? WHERE id=?').run(s(sl), c.id); c = getCand(c.id); }
+    }
+  }
   storeMessages(c, (b.messages || []).slice(-40));
   if (c.attend === '未联系') db.prepare("UPDATE candidates SET attend='沟通中' WHERE id=?").run(c.id);
   const cx = chatContext(c.id);
@@ -314,6 +323,10 @@ route('POST', '/api/ext/chat/suggest', 'ext', async (req, res) => {
   }
   const d = await inflight.get(key);
   if (d.topic) tagTopic(cx.unansweredIds, d.topic);
+  if (d.declineTz) {
+    db.prepare("UPDATE candidates SET verdict='不推荐', score=MIN(COALESCE(score,40),40), reason=?, reason_by='rule' WHERE id=?").run(`聊天中确认为非统招学历，${role.name}要求统招大专及以上`, c.id);
+    addEvent(db, c.id, '聊天中确认非统招学历 → 不推荐，礼貌婉拒');
+  }
   // persist extracted slots (no state change until the staff sends)
   const slots = { ...j(c.slots_json, {}), ...d.slots };
   db.prepare('UPDATE candidates SET slots_json=?, updated_at=? WHERE id=?').run(s(slots), nowCN(), c.id);

@@ -497,6 +497,8 @@ async function vSettings(m) {
           ${r.rules ? `<label class="fi">年龄上限<input type="number" data-ro-age="${k}" value="${esc(r.rules.maxAge ?? 35)}"></label>
           <label class="fi">最低学历<select data-ro-edu="${k}">${['大专', '本科', '硕士'].map(x => `<option ${x === (r.rules.minEdu || '大专') ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
           <label class="fi">意向型年龄上限（没经验但求职方向对口）<input type="number" data-ro-young="${k}" value="${esc(r.rules.youngMaxAge ?? 28)}"></label>
+          <label class="fi full" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" data-ro-tz="${k}" style="width:auto" ${r.rules.requireTongzhao ? 'checked' : ''}>要求统招（全日制）学历；简历没写是否统招时，约聊中会问</label>
+          <label class="fi full" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" data-ro-tzx="${k}" style="width:auto" ${r.rules.eduSalesException ? 'checked' : ''}>在教育行业做过销售类岗位的，可以接受非统招</label>
           <label class="fi full">相关经历关键词（职位或公司名命中即算有经验）<input data-ro-exp="${k}" value="${esc((r.rules.expKeywords || []).join('，'))}"></label>
           <label class="fi full">相关专业关键词（加分）<input data-ro-major="${k}" value="${esc((r.rules.majorKeywords || []).join('，'))}"></label>
           <label class="fi full">求职方向关键词<input data-ro-intent="${k}" value="${esc((r.rules.intentKeywords || []).join('，'))}"></label>` : ''}
@@ -574,6 +576,7 @@ async function vSettings(m) {
       const o = { ...r, jobKeywords: list(v('data-ro-jk').value), questions, focus: v('data-ro-focus').value.trim() };
       if (v('data-ro-en')) o.enabled = v('data-ro-en').checked;
       if (r.rules) o.rules = { ...r.rules, maxAge: +v('data-ro-age').value || 35, minEdu: v('data-ro-edu').value, youngMaxAge: +v('data-ro-young').value || 28,
+        requireTongzhao: v('data-ro-tz').checked, eduSalesException: v('data-ro-tzx').checked,
         expKeywords: list(v('data-ro-exp').value), majorKeywords: list(v('data-ro-major').value), intentKeywords: list(v('data-ro-intent').value) };
       out[k] = o;
     }

@@ -20,7 +20,7 @@ export const DEFAULT_ROLES = {
     name: '学管师',
     jobKeywords: ['学管', '学习管理', '学习规划', '班主任', '教务', '学员管理', '学业'],
     rules: {
-      maxAge: 35, minEdu: '大专', youngMaxAge: 28,
+      maxAge: 35, minEdu: '大专', youngMaxAge: 28, requireTongzhao: true, eduSalesException: false,
       expKeywords: ['学管', '班主任', '教务', '学习管理', '学习规划', '助教', '辅导员', '客服', '家长', '学员', '课程顾问', '教育', '培训', '运营', '前台'],
       majorKeywords: ['教育', '心理', '汉语言', '英语', '数学', '管理'],
       intentKeywords: ['学管', '班主任', '教务', '助教', '学习规划', '教育', '客服', '运营'],
@@ -28,6 +28,7 @@ export const DEFAULT_ROLES = {
     questions: [
       ['employed', '现在是在职还是已经离职'],
       ['live', '现在住在哪里，来校区方不方便'],
+      ['tongzhao', '大专学历是统招全日制的吗'],
       ['exp', '之前有没有做过教育、客服或班主任这类和学生、家长打交道的工作'],
       ['weekend', '能不能接受周末上班、工作日轮休'],
       ['arrive', '什么时候可以开始工作'],
@@ -38,7 +39,8 @@ export const DEFAULT_ROLES = {
     name: '咨询师',
     jobKeywords: ['咨询', '课程顾问', '学习顾问', '教育顾问', '招生', '销售', '顾问'],
     rules: {
-      maxAge: 35, minEdu: '大专', youngMaxAge: 30,
+      // 统招大专及以上；在教育行业做过销售的，非统招大专也可以
+      maxAge: 35, minEdu: '大专', youngMaxAge: 30, requireTongzhao: true, eduSalesException: true,
       expKeywords: ['课程顾问', '咨询', '招生', '销售', '电销', '电话销售', '顾问', '客户经理', '市场', '邀约', '房产', '保险', '地产', '业务'],
       majorKeywords: ['市场营销', '营销', '工商管理', '教育', '心理'],
       intentKeywords: ['课程顾问', '咨询', '销售', '招生', '顾问', '市场', '业务'],
@@ -46,6 +48,7 @@ export const DEFAULT_ROLES = {
     questions: [
       ['employed', '现在是在职还是已经离职'],
       ['live', '现在住在哪里，来校区方不方便'],
+      ['tongzhao', '大专学历是统招全日制的吗'],
       ['exp', '之前有没有做过销售、招生或课程顾问'],
       ['salary', '能不能接受底薪加提成的薪资结构'],
       ['arrive', '什么时候可以开始工作'],
@@ -124,6 +127,20 @@ export function roleFor(job, roles) {
   return 'teacher';
 }
 
+// 统招 status of the degrees that meet the minimum level: true / false / null (not shown)
+const NON_TZ = /非统招|自考|成人|函授|网络|业余|非全日制|开放|夜大/;
+export function tongzhaoOf(edus, minEdu) {
+  const rel = (edus || []).filter(e => eduRank(e.deg) >= eduRank(minEdu || '大专'));
+  if (!rel.length) return null;
+  if (rel.some(e => /统招|全日制/.test(e.mode || '') && !NON_TZ.test(e.mode || ''))) return true;
+  if (rel.every(e => NON_TZ.test(e.mode || ''))) return false;
+  return null;
+}
+// a sales-type job at an education company (培训机构、学校 …)
+const EDU_ORG = /教育|培训|学校|学堂|课堂|辅导|学院|教培|网校|少儿|书院|思维|英语|艺术|早教|托管|学而|学大|好未来|新东方|精锐|昂立|卓越|启德/;
+const SALES_ROLE = /销售|顾问|招生|咨询|市场|业务|电销|邀约/;
+export const eduSalesOf = work => (work || []).find(w => SALES_ROLE.test(w.role || '') && EDU_ORG.test(w.org || '')) || null;
+
 /**
  * Screening for non-teacher roles. Same verdict shape as rules.screen().
  * R01 age, R02 education, R03 related experience (job titles / major / skills),
@@ -145,11 +162,21 @@ export function screenRole(c, role) {
   r.push({ id: 'R02', name: `学历 ${R.minEdu || '大专'}及以上`, ok: eduRank(c.edu) < 0 ? null : eduRank(c.edu) >= eduRank(R.minEdu || '大专'), ev: c.edu || '页面未显示学历' });
   r.push({ id: 'R03', name: `${role.name}相关经历`, ok: !!expHit, ev: expHit ? `命中“${expHit}”` : (hay || '无工作经历') });
   r.push({ id: 'R04', name: '求职意向相关', ok: !!intentHit, ev: intentHit ? `求职方向含“${intentHit}”` : '求职方向未体现' });
+  // R05 统招: required unless (咨询师) the candidate sold for an education company
+  let tz = null, eduSales = null;
+  if (R.requireTongzhao) {
+    tz = tongzhaoOf(c.edus, R.minEdu);
+    eduSales = R.eduSalesException ? eduSalesOf(c.work) : null;
+    const ok = tz === true || (eduSales ? true : tz);
+    r.push({ id: 'R05', name: `统招${R.minEdu || '大专'}及以上${R.eduSalesException ? '（教育行业销售经验可放宽）' : ''}`, ok,
+      ev: tz === true ? '统招' : eduSales ? `${tz === false ? '非统招，' : ''}有教育行业销售经验（${eduSales.org} ${eduSales.role}）` : tz === false ? '非统招学历' : '简历未显示是否统招' });
+  }
+  const tzRule = r.find(x => x.id === 'R05');
 
   let verdict;
-  if (r[0].ok === false || r[1].ok === false) verdict = '不推荐';
-  else if (expHit) verdict = r[0].ok === null || r[1].ok === null ? '待确认' : '推荐';
-  else if (intentHit && (young || c.age == null)) verdict = c.age == null ? '待确认' : '推荐';
+  if (r[0].ok === false || r[1].ok === false || tzRule?.ok === false) verdict = '不推荐';
+  else if (expHit) verdict = r[0].ok === null || r[1].ok === null || tzRule?.ok === null ? '待确认' : '推荐';
+  else if (intentHit && (young || c.age == null)) verdict = c.age == null || tzRule?.ok === null ? '待确认' : '推荐';
   else verdict = young || c.age == null ? '待确认' : '不推荐';
 
   let score = 55 + (expHit ? 15 : 0) + (intentHit ? 8 : 0) + (majorHit ? 4 : 0) + (eduRank(c.edu) >= 3 ? 5 : 0) + Math.min(yrs, 4) * 3;
@@ -158,7 +185,8 @@ export function screenRole(c, role) {
   score = Math.max(0, Math.min(98, score));
 
   let reason;
-  if (verdict === '不推荐') reason = r[0].ok === false ? `年龄 ${c.age} 岁，超过 ${R.maxAge ?? 35} 岁上限` : r[1].ok === false ? `${c.edu}学历，要求${R.minEdu || '大专'}及以上` : `没有${role.name}相关经历，求职方向也不相关`;
+  if (verdict === '不推荐') reason = r[0].ok === false ? `年龄 ${c.age} 岁，超过 ${R.maxAge ?? 35} 岁上限` : r[1].ok === false ? `${c.edu}学历，要求${R.minEdu || '大专'}及以上`
+    : tzRule?.ok === false ? `非统招学历，${role.name}要求统招${R.minEdu || '大专'}及以上${R.eduSalesException ? '（有教育行业销售经验可放宽）' : ''}` : `没有${role.name}相关经历，求职方向也不相关`;
   else if (verdict === '推荐') reason = expHit ? `${c.age ?? ''}岁 ${c.edu || ''}；有相关经历（${expHit}）${intentHit ? '，求职方向也对口' : ''}` : `${c.age} 岁 ${c.edu || ''}；没有相关经历，但求职方向是“${intentHit}”（意向型）`;
   else reason = `${(r.find(x => x.ok === null) || r[2]).ev}，需你确认`;
   return { verdict, score, rules: r, reason: clip(reason.trim(), 80), role: role.name };
