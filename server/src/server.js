@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { openDb, getSetting, setSetting, addEvent } from './db.js';
 import { normalizeZhaopin, screen } from './rules.js';
-import { polishReasons, suggestReply, riskCheck, decideMode, guessTopic } from './ai.js';
+import { polishReasons, suggestReply, riskCheck, decideMode, guessTopic, reviewScreen, applyReview } from './ai.js';
 import { retrieve, kbStats, learnFromChats } from './kb.js';
 import { roleFor, screenRole, ROLE_KEYS, tongzhaoOf, eduSalesOf } from './roles.js';
 import { dueList, dueKind, convState, markFollowup, followupText } from './followup.js';
@@ -104,10 +104,51 @@ function roleOf(job) {
   const key = roleFor(job, roles);
   return { key, ...roles[key] };
 }
-function screenFor(n, job) {
+// a short fingerprint of a role's notes: an AI review stays valid while the notes are unchanged
+const notesHash = notes => [...String(notes || '')].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7).toString(36);
+function screenFor(n, job, ex) {
   const role = roleOf(job);
-  const sc = role.key === 'teacher' ? screen(n, getSetting(db, 'rules')) : screenRole(n, role);
-  return { ...sc, roleKey: role.key };
+  const sc = { ...(role.key === 'teacher' ? screen(n, getSetting(db, 'rules')) : screenRole(n, role)), roleKey: role.key };
+  // keep an earlier AI review against the notes if the rule verdict and the notes are the same as then
+  const prev = ex && j(ex.rules_json, []).find(r => r.id === 'AI');
+  if (prev && prev.ruleVerdict === sc.verdict && prev.notesHash === notesHash(role.notes)) {
+    return { ...sc, verdict: ex.verdict, score: ex.score, reason: ex.reason, rules: [...sc.rules, prev], keepAi: true };
+  }
+  return sc;
+}
+const summaryOf = c => `${c.age ?? '?'}岁 ${c.edu || ''} ${c.school || ''}${c.school_tag ? '(' + c.school_tag + ')' : ''} ${c.major || ''}；经历：${j(c.work_json, []).map(w => `${w.org} ${w.role}`).join('；') || '无'}；学历性质：${j(c.edu_json, []).map(e => e.mode).filter(Boolean).join('、') || '未注明'}；证书：${j(c.certs_json, []).join('、') || '无'}；求职方向：${c.expect || ''}`;
+/**
+ * AI review of rule verdicts against each role's notes (岗位要求与特殊情况备注). Only for
+ * candidates whose role has notes and whose verdict is not 推荐 (plus 推荐 ones on request).
+ * Returns {uid: {verdict, score, reason}} for what changed or was explained.
+ */
+async function reviewCandidates(rows, { includeRecommended = false } = {}) {
+  const st = settingsAll(), roles = st.roles || {};
+  const items = rows.map(c => { const key = c.role || roleFor(c.job, roles); return { c, key, role: roles[key] || {} }; })
+    .filter(x => (x.role.notes || '').trim() && (includeRecommended || x.c.verdict !== '推荐'));
+  if (!items.length) return {};
+  const out = {};
+  for (let i = 0; i < items.length; i += 20) {
+    const batch = items.slice(i, i + 20);
+    let res = null;
+    try { res = await reviewScreen(st, batch.map(x => ({ key: x.c.uid, role: x.role.name, notes: x.role.notes, verdict: x.c.verdict, score: x.c.score, rules: j(x.c.rules_json, []).filter(r => r.id !== 'AI'), summary: summaryOf(x.c) }))); }
+    catch (e) { console.error('[review] failed:', clip(e.message, 200)); }
+    if (!res) continue;
+    for (const x of batch) {
+      const p = res.map[x.c.uid];
+      if (!p) continue;
+      const v = applyReview(x.c.verdict, p.verdict);
+      const usedNote = !!p.basis && !/^规则/.test(p.basis);
+      const score = v === x.c.verdict ? x.c.score : v === '推荐' ? Math.max(x.c.score || 0, 70) : Math.max(Math.min(x.c.score || 50, 69), 50);
+      const reason = p.reason ? `${p.reason}${v !== x.c.verdict && usedNote ? '（按岗位备注）' : ''}` : x.c.reason;
+      const rules = j(x.c.rules_json, []).filter(r => r.id !== 'AI');
+      rules.push({ id: 'AI', name: '按岗位备注复核', ok: v === '推荐' ? true : v === '不推荐' ? false : null, ev: usedNote ? p.basis : '备注不适用，维持规则结论', ruleVerdict: x.c.verdict, notesHash: notesHash(x.role.notes) });
+      db.prepare("UPDATE candidates SET verdict=?, score=?, reason=?, reason_by='ai', rules_json=? WHERE id=?").run(v, score, reason, s(rules), x.c.id);
+      if (v !== x.c.verdict) addEvent(db, x.c.id, `AI 按岗位备注复核：${x.c.verdict} → ${v}（${clip(p.basis, 60)}）`);
+      out[x.c.uid] = { verdict: v, score, reason, from: x.c.verdict };
+    }
+  }
+  return out;
 }
 function upsertScreened(platform, job, n, sc, source) {
   const r = upsertScreenedRow(platform, job, n, sc, source);
@@ -124,6 +165,7 @@ function upsertScreenedRow(platform, job, n, sc, source) {
       work_json=?,edu_json=?,skills_json=?,certs_json=?,self_eval=?,verdict=?,score=?,rules_json=?,
       reason=CASE WHEN reason_by='ai' AND verdict=? THEN reason ELSE ? END, reason_by=CASE WHEN reason_by='ai' AND verdict=? THEN reason_by ELSE 'rule' END,
       updated_at=? WHERE id=?`).run(...vals, sc.verdict, sc.reason, sc.verdict, now, ex.id);
+    if (sc.keepAi) db.prepare("UPDATE candidates SET reason=?, reason_by='ai' WHERE id=?").run(sc.reason, ex.id);
     return getCand(ex.id);
   }
   const r = db.prepare(`INSERT INTO candidates(platform,uid,name,gender,age,edu,school,school_tag,major,years,career_status,expect,job,
@@ -269,7 +311,8 @@ route('POST', '/api/ext/screen', 'ext', async (req, res) => {
   for (const raw of (b.cards || []).slice(0, 60)) {
     const n = normalizeZhaopin(raw);
     if (!n.uid) continue;
-    const sc = screenFor(n, b.job);
+    const ex = db.prepare('SELECT * FROM candidates WHERE platform=? AND uid=?').get(platform, n.uid);
+    const sc = screenFor(n, b.job, ex);
     const c = upsertScreened(platform, clip(b.job, 40) || null, n, sc, platform === 'zhaopin' ? '智联 推荐列表' : 'BOSS');
     out.push({ uid: n.uid, id: c.id, verdict: c.verdict, score: c.score, reason: c.reason, reasonBy: c.reason_by, attend: c.attend });
   }
@@ -280,9 +323,14 @@ route('POST', '/api/ext/screen', 'ext', async (req, res) => {
 route('POST', '/api/ext/reasons', 'ext', async (req, res) => {
   const b = await body(req);
   const ids = (b.uids || []).slice(0, 30);
-  const rows = ids.map(u => db.prepare('SELECT * FROM candidates WHERE platform=? AND uid=?').get(b.platform === 'boss' ? 'boss' : 'zhaopin', String(u))).filter(Boolean)
-    .filter(c => c.reason_by !== 'ai');
-  let map = {};
+  const platform = b.platform === 'boss' ? 'boss' : 'zhaopin';
+  const load = () => ids.map(u => db.prepare('SELECT * FROM candidates WHERE platform=? AND uid=?').get(platform, String(u))).filter(Boolean).filter(c => c.reason_by !== 'ai');
+  // 1) rule verdicts that are not 推荐 are reviewed against the role's notes (may be widened)
+  let verdicts = {};
+  try { verdicts = await reviewCandidates(load()); } catch (e) { console.error('[reasons] review failed:', clip(e.message, 200)); }
+  // 2) everything not yet explained by the AI gets a one-line reason
+  const rows = load();
+  let map = Object.fromEntries(Object.entries(verdicts).map(([k, v]) => [k, v.reason]));
   try {
     const st = settingsAll();
     const r = await polishReasons(st, rows.map(c => ({
@@ -290,12 +338,11 @@ route('POST', '/api/ext/reasons', 'ext', async (req, res) => {
       summary: `${c.age}岁 ${c.edu} ${c.school || ''}${c.school_tag ? '(' + c.school_tag + ')' : ''} ${c.major || ''}；经历：${j(c.work_json, []).map(w => `${w.org} ${w.role}`).join('；')}；证书：${j(c.certs_json, []).join('、') || '无'}`,
     })));
     if (r) {
-      map = r.map;
       const up = db.prepare("UPDATE candidates SET reason=?, reason_by='ai' WHERE platform=? AND uid=?");
-      for (const [k, v] of Object.entries(map)) up.run(v, b.platform === 'boss' ? 'boss' : 'zhaopin', k);
+      for (const [k, v] of Object.entries(r.map)) { up.run(v, platform, k); map[k] = v; }
     }
-  } catch (e) { return send(res, 200, { reasons: {}, error: clip(e.message, 200) }); }
-  send(res, 200, { reasons: map });
+  } catch (e) { return send(res, 200, { reasons: map, verdicts, error: clip(e.message, 200) }); }
+  send(res, 200, { reasons: map, verdicts });
 });
 
 // a chat thread snapshot from the platform page; returns an AI draft
@@ -344,7 +391,11 @@ route('POST', '/api/ext/chat/suggest', 'ext', async (req, res) => {
   // resume shown in the chat (candidate applied): screen it with the same rules as the recommend page
   if (b.profile && typeof b.profile === 'object') {
     const n = normalizeZhaopin({ ...b.profile, resumeNumber: c.uid, userName: b.profile.userName || b.name });
-    if (n.edu || n.age != null || n.work.length) c = upsertScreened(platform, clip(b.job, 40) || null, n, screenFor(n, b.job || c.job), platform === 'zhaopin' ? '智联 聊天（投递）' : 'BOSS 聊天');
+    if (n.edu || n.age != null || n.work.length) {
+      c = upsertScreened(platform, clip(b.job, 40) || null, n, screenFor(n, b.job || c.job, c), platform === 'zhaopin' ? '智联 聊天（投递）' : 'BOSS 聊天');
+      // an applicant the rules reject gets the notes review before the first reply (so nobody suitable is declined)
+      if (c.verdict !== '推荐' && !j(c.rules_json, []).some(r => r.id === 'AI')) { await reviewCandidates([c]); c = getCand(c.id); }
+    }
   }
   const role = roleOf(b.job || c.job);
   if (c.role !== role.key) db.prepare('UPDATE candidates SET role=? WHERE id=?').run(role.key, c.id);
@@ -624,17 +675,22 @@ route('POST', '/api/kb/learn', 'admin', async (req, res) => {
 route('GET', '/api/diag', 'admin', (req, res) => send(res, 200, Object.fromEntries(['chat', 'invite', 'boss', 'bossRec', 'rec', 'stall'].map(k => [k, getSetting(db, `diag_${k}`)]))));
 
 route('POST', '/api/settings/rotate-token', 'admin', (req, res) => { const t = randomToken(18); setSetting(db, 'ext_token', t); send(res, 200, { extToken: t }); });
-route('POST', '/api/settings/rescreen', 'admin', (req, res) => {
-  const rules = getSetting(db, 'rules'); let n = 0;
+route('POST', '/api/settings/rescreen', 'admin', async (req, res) => {
+  let n = 0;
   for (const c of db.prepare("SELECT * FROM candidates WHERE work_json IS NOT NULL").all()) {
     const norm = { uid: c.uid, name: c.name, age: c.age, edu: c.edu, school: c.school, school_tag: c.school_tag, major: c.major, years: c.years, expect: c.expect,
       work: j(c.work_json, []), edus: j(c.edu_json, []), skills: j(c.skills_json, []), certs: j(c.certs_json, []) };
-    const sc = screenFor(norm, c.job);
+    const sc = screenFor(norm, c.job, c);
     db.prepare('UPDATE candidates SET role=? WHERE id=?').run(sc.roleKey, c.id);
-    db.prepare("UPDATE candidates SET verdict=?, score=?, rules_json=?, reason=CASE WHEN reason_by='staff' THEN reason ELSE ? END, reason_by=CASE WHEN reason_by='staff' THEN 'staff' ELSE 'rule' END WHERE id=?")
-      .run(sc.verdict, sc.score, s(sc.rules), sc.reason, c.id); n++;
+    db.prepare("UPDATE candidates SET verdict=?, score=?, rules_json=?, reason=CASE WHEN reason_by='staff' THEN reason ELSE ? END, reason_by=CASE WHEN reason_by='staff' THEN 'staff' WHEN ? THEN 'ai' ELSE 'rule' END WHERE id=?")
+      .run(sc.verdict, sc.score, s(sc.rules), sc.reason, sc.keepAi ? 1 : 0, c.id); n++;
   }
-  send(res, 200, { rescreened: n });
+  // then the notes review for the ones the rules did not recommend (newest first, up to 200)
+  const need = db.prepare("SELECT * FROM candidates WHERE work_json IS NOT NULL AND is_demo=0 AND verdict!='推荐' ORDER BY updated_at DESC LIMIT 400").all()
+    .filter(c => !j(c.rules_json, []).some(r => r.id === 'AI')).slice(0, 200);
+  const changed = await reviewCandidates(need);
+  const widened = Object.values(changed).filter(v => v.from !== v.verdict && v.verdict !== '不推荐').length;
+  send(res, 200, { rescreened: n, reviewed: need.length, widened });
 });
 route('POST', '/api/tools/riskcheck', 'admin', async (req, res) => { const b = await body(req); send(res, 200, riskCheck(String(b.text || ''))); });
 route('POST', '/api/tools/llm-test', 'admin', async (req, res) => {

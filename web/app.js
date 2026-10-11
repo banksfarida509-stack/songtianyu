@@ -504,6 +504,8 @@ async function vSettings(m) {
           <label class="fi full">求职方向关键词<input data-ro-intent="${k}" value="${esc((r.rules.intentKeywords || []).join('，'))}"></label>` : ''}
           <label class="fi full">约聊时依次了解（一行一个问题，AI 每条消息最多问一个）<textarea data-ro-q="${k}" style="min-height:96px">${esc((r.questions || []).map(q => q[1]).join('\n'))}</textarea></label>
           <label class="fi full">岗位沟通要点（工作内容、要突出什么、要确认什么）<textarea data-ro-focus="${k}" style="min-height:80px">${esc(r.focus || '')}</textarea></label>
+          <label class="fi full"><span><b>岗位要求与特殊情况备注</b> <span class="small muted">— 规则判“不推荐 / 待确认”的人，AI 会按这里复核，符合放宽条件的改为推荐或待确认；只放宽，不会把规则合格的人判为不推荐</span></span>
+            <textarea data-ro-notes="${k}" style="min-height:100px" placeholder="一行写一条，用大白话即可，例如：&#10;有公立学校教学经验的，年龄可以放宽到 40 岁&#10;专业不对口，但在培训机构带过 2 年以上班的也可以&#10;统招中专毕业、后来专升本或自考本科的，也可以考虑&#10;做过幼儿园老师、想转初中的，可以约来面试看看">${esc(r.notes || '')}</textarea></label>
         </div></details>`).join('')}
       <div class="inline-form"><button class="btn pri" id="ro-save">保存岗位配置</button><button class="btn" id="ro-re">保存并按新规则重新初筛全部</button></div></div></div>
     <div class="card" id="ar-card"><div class="card-h"><h3>约聊回复方式</h3><span class="sub">候选人每条消息先由 AI 分类，再按分类处理</span></div><div class="card-b">
@@ -580,7 +582,7 @@ async function vSettings(m) {
       const lines = v('data-ro-q').value.split('\n').map(x => x.trim()).filter(Boolean);
       const old = r.questions || [];
       const questions = lines.map((q, i) => [(old.find(o => o[1] === q) || old[i] || [`q${i + 1}`])[0], q]);
-      const o = { ...r, jobKeywords: list(v('data-ro-jk').value), questions, focus: v('data-ro-focus').value.trim() };
+      const o = { ...r, jobKeywords: list(v('data-ro-jk').value), questions, focus: v('data-ro-focus').value.trim(), notes: v('data-ro-notes').value.trim() };
       if (v('data-ro-en')) o.enabled = v('data-ro-en').checked;
       if (r.rules) o.rules = { ...r.rules, maxAge: +v('data-ro-age').value || 35, minEdu: v('data-ro-edu').value, youngMaxAge: +v('data-ro-young').value || 28,
         requireTongzhao: v('data-ro-tz').checked, eduSalesException: v('data-ro-tzx').checked,
@@ -590,7 +592,13 @@ async function vSettings(m) {
     return out;
   };
   $('#ro-save').onclick = () => save({ roles: roBody() }, '岗位配置已保存');
-  $('#ro-re').onclick = async () => { await save({ roles: roBody() }); const r = await api('/settings/rescreen', { body: {} }); toast(`已按新规则重新初筛 ${r.rescreened} 人`); };
+  $('#ro-re').onclick = async () => {
+    await save({ roles: roBody() });
+    const b = $('#ro-re'); b.disabled = true; b.textContent = '重新初筛中，AI 正在按备注复核…（可能要 1–2 分钟）';
+    try { const r = await api('/settings/rescreen', { body: {} }); toast(`已重新初筛 ${r.rescreened} 人；按岗位备注复核 ${r.reviewed} 人，其中 ${r.widened} 人改为推荐 / 待确认`); }
+    catch (e) { toast(e.message); }
+    b.disabled = false; b.textContent = '保存并按新规则重新初筛全部';
+  };
   $('#o-save').onclick = () => save({ org: orgBody(), autoReply: arBody() });
   $$('[data-go]', m).forEach(b => b.onclick = () => go(b.dataset.go));
   $('#r-re').onclick = async () => { await $('#r-save').onclick(); const r = await api('/settings/rescreen', { body: {} }); toast(`已按新规则重新初筛 ${r.rescreened} 人`); };

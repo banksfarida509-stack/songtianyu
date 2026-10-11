@@ -275,7 +275,15 @@
     const need = r.data.results.filter(x => x.reasonBy !== 'ai').map(x => x.uid);
     if (need.length) {
       const rr = await api('/ext/reasons', { platform: PLATFORM, uids: need });
-      if (rr.data?.reasons) { for (const [k, v] of Object.entries(rr.data.reasons)) if (S.results[k]) { S.results[k].reason = v; S.results[k].reasonBy = 'ai'; } paintLines(); draw(); }
+      if (rr.data?.reasons) { for (const [k, v] of Object.entries(rr.data.reasons)) if (S.results[k]) { S.results[k].reason = v; S.results[k].reasonBy = 'ai'; } }
+      // verdicts widened by the review against the role's notes
+      let widened = 0;
+      for (const [k, v] of Object.entries(rr.data?.verdicts || {})) if (S.results[k]) {
+        if (S.results[k].verdict !== v.verdict && v.verdict !== '不推荐') widened++;
+        Object.assign(S.results[k], { verdict: v.verdict, score: v.score, reason: v.reason, reasonBy: 'ai' });
+      }
+      if (widened) log(`按岗位备注复核：${widened} 人改为推荐 / 待确认`);
+      paintLines(); draw();
     }
   }
   function paintLines() {

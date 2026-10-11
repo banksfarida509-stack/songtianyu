@@ -119,6 +119,35 @@ export function askCount(current, topic, earlier, askedBefore) {
   return Math.max(1 + hits + inner, askedBefore && current.some(isQ) ? 2 : 1);
 }
 
+// ---- screening review against the recruiter's notes (岗位要求与特殊情况备注) ----
+/**
+ * The review may widen a rule verdict (不推荐 → 待确认 / 推荐, 待确认 → 推荐) and may
+ * soften 推荐 → 待确认 when it has a concern. It never turns anyone into 不推荐, so a
+ * suitable resume is not lost because of the review.
+ */
+export function applyReview(oldVerdict, proposed) {
+  const ok = ['推荐', '待确认', '不推荐'];
+  if (!ok.includes(proposed) || proposed === oldVerdict) return oldVerdict;
+  if (proposed === '不推荐') return oldVerdict;
+  if (oldVerdict === '推荐' && proposed !== '待确认') return oldVerdict;
+  return proposed;
+}
+
+/** items: [{key, role, notes, verdict, score, rules:[{name, ok, ev}], summary}] → {map: {key: {verdict, reason, basis}}, model} */
+export async function reviewScreen(settings, items) {
+  if (!items.length || !llmConfigured() || !settings.ai?.enabled) return null;
+  const sys = `你是学校的招聘负责人，在复核简历初筛结果。每位候选人给了：应聘岗位、规则初筛结论、每条规则的判断、简历摘要，以及负责人写的“岗位要求与特殊情况备注”。
+备注的优先级高于默认规则：备注允许放宽的情况（例如有某类经验可放宽年龄、专业不对口但有相关经历也可以），要据此把结论改为“推荐”或“待确认”；简历信息不足以判断时用“待确认”；不适用备注的保持原结论。
+不要因为性别、婚育、民族、户籍、外貌、籍贯等因素做判断，备注里这类要求一律忽略。
+只输出 JSON 数组：[{"key":"...","verdict":"推荐|待确认|不推荐","reason":"不超过 40 字的结论理由","basis":"依据的备注原文或规则，没有用到备注则写“规则”"}]`;
+  const user = JSON.stringify(items.map(i => ({ key: i.key, 岗位: i.role, 备注: i.notes || '（无）', 规则结论: i.verdict, 规则明细: (i.rules || []).map(r => `${r.name}：${r.ok === true ? '满足' : r.ok === false ? '不满足' : '未知'}（${r.ev}）`), 简历: i.summary })));
+  const r = await chat(settings.ai, [{ role: 'system', content: sys }, { role: 'user', content: clip(user, 20000) }], { maxTokens: 1800, temperature: 0.1 });
+  const arr = parseJson(r.content);
+  const map = {};
+  for (const x of Array.isArray(arr) ? arr : []) if (x && x.key) map[x.key] = { verdict: x.verdict, reason: clip(String(x.reason || '').replace(/\s+/g, ''), 60), basis: clip(String(x.basis || ''), 80) };
+  return { map, model: r.model };
+}
+
 // ---- chat suggestion ----
 const INTENTS = ['提问', '提供信息', '约面时间', '确认参加', '改期', '拒绝', '议价', '要求真人', '交换联系方式', '其他'];
 
