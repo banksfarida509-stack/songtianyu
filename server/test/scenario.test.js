@@ -48,6 +48,12 @@ test('平台自动招呼语在前、候选人发附件简历 → 仍按投递处
   assert.equal(d.intent, '投递-符合');
 });
 
+test('投递卡片 → 平台自动招呼语（模板）→ 附件简历：仍按投递首条回复处理', async () => {
+  const h = [{ dir: 'in', text: '[卡片] 对方投递了您的职位' }, { dir: 'out', text: '你好呀！沈阳最大教培企业招教师啦', tpl: true }, { dir: 'in', text: '[卡片·附件简历] 您好，这是我的附件简历，请查收' }];
+  const d = await suggestReply({ verdict: '待确认', slots: {} }, h, { settings, db, origin: 'applied', offer });
+  assert.equal(d.intent, '投递-待确认');
+});
+
 test('我们先打招呼的会话不走投递场景', async () => {
   const d = await suggestReply({ verdict: '推荐', slots: {} }, [{ dir: 'out', text: '你好，看到你在找数学老师的工作' }, { dir: 'in', text: '你好，学校在哪？' }], { settings, db, origin: 'greeted', offer });
   assert.ok(!String(d.intent).startsWith('投递'));

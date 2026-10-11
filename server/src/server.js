@@ -258,8 +258,11 @@ function storeMessages(c, list) {
 function chatContext(cid) {
   const rows = db.prepare('SELECT id,dir,text,topic FROM messages WHERE candidate_id=? ORDER BY id').all(cid);
   const lastOut = rows.map(r => r.dir).lastIndexOf('out');
+  // an outgoing message sent word for word to 2+ candidates is a template greeting, not a reply
+  const tpl = db.prepare("SELECT COUNT(DISTINCT candidate_id) n FROM messages WHERE dir='out' AND text=?");
+  const isTpl = r => r.dir === 'out' && (/^\[?(再次)?招呼语/.test(r.text) || tpl.get(r.text).n >= 2);
   return {
-    history: rows.map(r => ({ dir: r.dir, text: r.text })),
+    history: rows.map(r => ({ dir: r.dir, text: r.text, tpl: isTpl(r) })),
     earlierQuestions: rows.slice(0, Math.max(0, lastOut)).filter(r => r.dir === 'in').map(r => ({ text: r.text, topic: r.topic })),
     unansweredIds: rows.slice(lastOut + 1).filter(r => r.dir === 'in').map(r => r.id),
   };

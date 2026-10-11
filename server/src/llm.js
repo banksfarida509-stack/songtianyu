@@ -78,11 +78,19 @@ export async function chat(ai, messages, opts) {
 }
 
 /** Extract the first JSON object/array from a model reply. */
+// Models sometimes put text such as "[卡片]" before the JSON, so every { / [
+// position is tried until one parses.
 export function parseJson(text) {
   const t = String(text).replace(/```(?:json)?/g, '').trim();
-  const start = t.search(/[[{]/);
-  if (start < 0) throw new Error('no JSON in reply');
-  const open = t[start], close = open === '{' ? '}' : ']';
-  const end = t.lastIndexOf(close);
-  return JSON.parse(t.slice(start, end + 1));
+  let lastErr = null, tries = 0;
+  for (let i = 0; i < t.length && tries < 200; i++) {
+    const open = t[i];
+    if (open !== '{' && open !== '[') continue;
+    const close = open === '{' ? '}' : ']';
+    for (let end = t.lastIndexOf(close); end > i && tries < 200; end = t.lastIndexOf(close, end - 1)) {
+      tries++;
+      try { return JSON.parse(t.slice(i, end + 1)); } catch (e) { lastErr = e; }
+    }
+  }
+  throw lastErr || new Error('no JSON in reply');
 }

@@ -156,8 +156,9 @@ export async function suggestReply(candidate, history, ctx) {
   // scenario: who started the chat, is this our first reply, what did screening say.
   // The platform may send an automatic greeting before the candidate's application,
   // so "first reply" = nothing sent by us after the candidate's first message.
+  // template greetings (same text sent to many candidates) don't count as our reply
   const firstIn = history.findIndex(m => m.dir === 'in');
-  const firstReply = firstIn >= 0 && !history.slice(firstIn + 1).some(m => m.dir === 'out');
+  const firstReply = firstIn >= 0 && !history.slice(firstIn + 1).some(m => m.dir === 'out' && !m.tpl);
   const origin = ctx.origin || 'unknown';
   const verdict = candidate.verdict || null;
   const scenario = firstReply && origin === 'applied'
@@ -174,7 +175,7 @@ export async function suggestReply(candidate, history, ctx) {
   const known = candidate.slots || {};
   const toAsk = [['employed', '现在是在职还是已经离职'], ['live', '现在住在哪里 / 来学校方不方便'], ['cert', '有没有教师资格证'], ['arrive', '最快什么时候能到岗']]
     .filter(([k]) => !known[k]).map(([, q]) => q);
-  const rounds = history.filter(m => m.dir === 'out').length;
+  const rounds = history.filter(m => m.dir === 'out' && !m.tpl).length;
   const pace = `沟通节奏：先寒暄、了解情况，再介绍和邀约。还没了解的：${toAsk.join('、') || '（都已了解）'}。每条消息最多问一个问题，已经知道的不要再问。对方提出问题时先认真回答，再顺带问下一个。`
     + `已经聊了 ${rounds} 轮；当对方表现出意向，或已经了解了在职情况和住处（或已聊到第 3 轮以上）时，就主动邀约初试，给出上面的时间选项。`;
   const scenarioRule = scenario === '投递-符合'
@@ -206,7 +207,10 @@ ${docText || '（无相关段落）'}
 只输出 JSON：{"intent":"${INTENTS.join('|')}","topic":"${TOPICS.join('|')}","askedBefore":false,"unknown":false,"slots":{"employed":"在职/离职/应届/null","live":"住处或null","cert":"有/没有/在考/null","arrive":"到岗时间或null","day":"YYYY-MM-DD 或 null","half":"am/pm/any/null"},"reply":"给候选人的回复","kb":["引用的编号，如 KB-01、D2"]}
 说明：intent 里“议价”只指讨价还价（能不能再高点、能保证一万吗）；单纯问工资多少、有没有五险一金、几点下班属于“提问”。`;
     const msgs = [{ role: 'system', content: sys }];
-    for (const m of history.slice(-12)) msgs.push({ role: m.dir === 'in' ? 'user' : 'assistant', content: clip(m.text, 300) });
+    // cards are described in words (a "[卡片]" prefix makes the model copy it); template greetings are labelled
+    const say = m => String(m.text).replace(/^\[卡片·附件简历\]\s*/, '（对方发来附件简历）').replace(/^\[卡片\]\s*/, '（对方发来一张卡片）');
+    for (const m of history.slice(-12)) msgs.push({ role: m.dir === 'in' ? 'user' : 'assistant', content: clip(m.tpl ? `（平台自动发送的招呼语）${m.text}` : say(m), 300) });
+    msgs.push({ role: 'system', content: '只输出上面要求的 JSON 对象，不要在 JSON 前后加任何文字或括号标记。' });
     // one retry with the providers swapped: covers transient gateway errors and non-JSON output
     const swapped = { ...settings.ai, provider: settings.ai.fallbackProvider, model: settings.ai.fallbackModel, fallbackProvider: settings.ai.provider, fallbackModel: settings.ai.model };
     for (const cfg of [settings.ai, swapped]) {
