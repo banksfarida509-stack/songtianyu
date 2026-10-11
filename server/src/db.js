@@ -91,7 +91,10 @@ export const DEFAULT_SETTINGS = {
     scanUnread: true,             // 自动打开有未读消息的会话
     repeatLimit: 2,               // 同一问题问到第几遍转本人回复
     autoInvite: true,             // 约定时间后，全自动模式下自动点平台「约面试」发邀约
+    // 主动跟进：打招呼后久未回复 / 对方已读不回时，发一次跟进消息（全自动开启时才发）
+    followup: { enabled: true, greetHours: 3, readHours: 1, onlyIfRead: true, maxTotal: 3 },
     policy: {
+      '跟进': 'auto',
       '投递-符合': 'auto', '投递-不符合': 'auto', '投递-待确认': 'auto',
       提问: 'auto', 提供信息: 'auto', 约面时间: 'auto', 确认参加: 'auto', 改期: 'auto',
       拒绝: 'auto', 议价: 'human', 要求真人: 'human', 交换联系方式: 'semi', 其他: 'semi',
@@ -124,6 +127,10 @@ export function openDb(file) {
   // topic of each candidate question (薪资 / 作息时间 …) — used to spot a question asked twice
   const mcols = db.prepare('PRAGMA table_info(messages)').all().map(c => c.name);
   if (!mcols.includes('topic')) db.exec('ALTER TABLE messages ADD COLUMN topic TEXT');
+  // follow-ups: when we greeted (epoch ms) and what follow-ups were sent
+  const ccols = db.prepare('PRAGMA table_info(candidates)').all().map(c => c.name);
+  if (!ccols.includes('greeted_ms')) db.exec('ALTER TABLE candidates ADD COLUMN greeted_ms INTEGER');
+  if (!ccols.includes('followup_json')) db.exec('ALTER TABLE candidates ADD COLUMN followup_json TEXT');
   // job roles: each candidate and each knowledge-base document belongs to a role (通用 = all)
   if (!db.prepare('PRAGMA table_info(candidates)').all().some(c => c.name === 'role')) db.exec("ALTER TABLE candidates ADD COLUMN role TEXT NOT NULL DEFAULT 'teacher'");
   if (!db.prepare('PRAGMA table_info(kb_docs)').all().some(c => c.name === 'role')) db.exec("ALTER TABLE kb_docs ADD COLUMN role TEXT NOT NULL DEFAULT 'all'");

@@ -73,7 +73,7 @@ export function decideMode(draft, { autoReply, override, nowHM, sentLastHour }) 
   if (want === 'human') return { mode: 'human', why: `${src}转人工` };
   if (want === 'semi') return { mode: 'semi', why: `${src}半自动` };
   // without the LLM the canned reply cannot answer free questions; only fixed-flow intents may go out alone
-  if (draft.byAi === false && !draft.declineTz && !['约面时间', '确认参加', '改期', '拒绝', '交换联系方式', '投递-符合', '投递-不符合', '投递-待确认'].includes(draft.intent)) return { mode: 'semi', why: 'AI 暂不可用，规则回复不自动发' };
+  if (draft.byAi === false && !draft.declineTz && !['跟进', '约面时间', '确认参加', '改期', '拒绝', '交换联系方式', '投递-符合', '投递-不符合', '投递-待确认'].includes(draft.intent)) return { mode: 'semi', why: 'AI 暂不可用，规则回复不自动发' };
   if (!ar.enabled) return { mode: 'semi', why: '全自动总开关未打开' };
   const [h0, h1] = ar.hours || ['00:00', '23:59'];
   if (nowHM < h0 || nowHM > h1) return { mode: 'semi', why: `不在自动回复时段（${h0}–${h1}）` };

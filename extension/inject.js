@@ -384,6 +384,38 @@
     post('openResult', { reqId, ok: false, none: true, msg: '没有未读会话', sessions: sessionsOf(st).length, badges: badgeRows().length });
   }
 
+  // ---------- follow-ups: open a given candidate's conversation, read our last message's state ----------
+  async function openBy(reqId, { uid, name }) {
+    const st = rootVm()?.$store?.state?.im;
+    if (!st) return post('openResult', { reqId, ok: false, msg: '未读到聊天数据' });
+    if ((chatInput()?.value || '').trim()) return post('openResult', { reqId, ok: false, msg: '输入框有内容，暂不切换会话' });
+    const s = sessionsOf(st).find(x => (uid && x.resumeNumber === uid) || (name && nameOf(x) === name));
+    if (!s) return post('openResult', { reqId, ok: false, msg: `会话列表里没找到「${name || uid}」（可能在列表较后面）` });
+    const r = await activate(st, s);
+    markVisited(st, s);
+    post('openResult', r.ok ? { reqId, ok: true, msg: `打开会话：${nameOf(s)}` } : { reqId, ok: false, msg: `打不开会话「${nameOf(s)}」` });
+  }
+  // was our last message read? the message object's read flag, else the 已读 / 未读 label next to it
+  function lastOutRead(tl) {
+    const m = [...tl].reverse().find(x => x && x.flow === 'out');
+    for (const [k, v] of Object.entries(m || {})) {
+      if (!/read/i.test(k)) continue;
+      if (v === true || v === 1 || v === 'read' || v === '已读') return true;
+      if (v === false || v === 0 || v === 'unread' || v === '未读') return false;
+    }
+    const labels = [...document.querySelectorAll('span, div, i, em, p')]
+      .filter(e => e.children.length === 0 && /^(已读|未读|送达)$/.test((e.textContent || '').trim()) && visible(e) && e.getBoundingClientRect().left > window.innerWidth * 0.3);
+    if (!labels.length) return null;
+    const bottom = labels.sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
+    return bottom.textContent.trim() === '已读';
+  }
+  function readState(reqId) {
+    const st = rootVm()?.$store?.state?.im;
+    const tl = (st && st.timelineMap?.[st.activeSessionId]?.timeline) || [];
+    const msgs = toMsgs(tl, 30);
+    post('readStateResult', { reqId, name: nameOf(st?.currentSession || {}), lastDir: msgs.length ? msgs[msgs.length - 1].dir : null, read: lastOutRead(tl), messages: msgs });
+  }
+
   // read past conversations one by one (opens each; never types or sends).
   // Sessions with unread messages are skipped so they are not marked as read.
   const msgsOf = (st, sid) => toMsgs((st.timelineMap?.[sid]?.timeline) || [], 200);
@@ -622,6 +654,8 @@
     if (d.type === 'open') openSession(d.id, d.reqId);
     if (d.type === 'nextUnread') nextUnread(d.reqId, d.skip);
     if (d.type === 'history') collectHistory(d.reqId, d.max);
+    if (d.type === 'openBy') openBy(d.reqId, d);
+    if (d.type === 'readState') readState(d.reqId);
     if (d.type === 'invite') sendInvite(d.reqId, d);
     if (d.type === 'diagnose') { let r; try { r = diagnose(); } catch (er) { r = { error: String(er && er.message || er) }; } post('diagResult', { reqId: d.reqId, ok: true, data: r }); }
     if (d.type === 'historyStop') collecting = false;

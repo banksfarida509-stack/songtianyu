@@ -250,6 +250,28 @@
     post('historyResult', { reqId, ok: true, sessions: out, skipped });
   }
 
+  // ---------- follow-ups ----------
+  async function openBy(reqId, { name }) {
+    if (inputText(chatInput())) return post('openResult', { reqId, ok: false, msg: '输入框有内容，暂不切换会话' });
+    if (currentName() === name) return post('openResult', { reqId, ok: true, msg: `已在会话：${name}` });
+    const x = listRows().find(r => r.name === name);
+    if (!x) return post('openResult', { reqId, ok: false, msg: `会话列表里没找到「${name}」（可能在列表较后面）` });
+    const targets = [x.row, ...[...x.row.querySelectorAll('*')].filter(e => e.children.length === 0 && textOf(e) === name)];
+    for (const t of targets) {
+      realClick(t);
+      for (let k = 0; k < 8; k++) { await wait(250); if (currentName() === name) return post('openResult', { reqId, ok: true, msg: `打开会话：${name}` }); }
+    }
+    post('openResult', { reqId, ok: false, msg: `打不开会话「${name}」` });
+  }
+  function readState(reqId) {
+    const name = currentName();
+    const msgs = name ? readMessages(name).slice(-30) : [];
+    const labels = [...document.querySelectorAll('span, div, i, em, p')]
+      .filter(e => e.children.length === 0 && /^\[?(已读|未读|送达)\]?$/.test((e.textContent || '').trim()) && visible(e) && e.getBoundingClientRect().left > window.innerWidth * 0.3);
+    const bottom = labels.sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
+    post('readStateResult', { reqId, name, lastDir: msgs.length ? msgs[msgs.length - 1].dir : null, read: bottom ? /已读/.test(bottom.textContent) : null, messages: msgs });
+  }
+
   // ---------- diagnostics (structure only: class names, counts, short labels) ----------
   function diagnose() {
     const top = (sel, n = 12) => [...document.querySelectorAll(sel)].filter(visible).slice(0, n).map(e => ({ tag: e.tagName, cls: cls(e).slice(0, 80) }));
@@ -279,6 +301,8 @@
     if (d.type === 'diagnose') { let r; try { r = diagnose(); } catch (er) { r = { error: String(er && er.message || er) }; } post('diagResult', { reqId: d.reqId, ok: true, data: r }); }
     if (d.type === 'invite') post('inviteResult', { reqId: d.reqId, ok: false, msg: 'BOSS 直聘的自动发面试邀约还在适配中，请你手动点「约面试」' });
     if (d.type === 'history') collectHistory(d.reqId, d.max);
+    if (d.type === 'openBy') openBy(d.reqId, d);
+    if (d.type === 'readState') readState(d.reqId);
     if (d.type === 'historyStop') collecting = false;
     if (d.type === 'reread') { lastSig = ''; readChat(); }
   });

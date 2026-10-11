@@ -457,9 +457,9 @@ async function vKb(m) {
 async function vSettings(m) {
   m.innerHTML = loading;
   const [st, ivs] = await Promise.all([api('/settings'), api('/interviewers')]);
-  const R = st.rules, SC = st.schedule, AI = st.ai, ORG = st.org, AR = st.autoReply, RO = st.roles || {};
+  const R = st.rules, SC = st.schedule, AI = st.ai, ORG = st.org, AR = st.autoReply, RO = st.roles || {}, FU = AR.followup || {};
   const MODES = { auto: '全自动', semi: '半自动', human: '转人工' };
-  const AR_CATS = { '投递-符合': '主动投递、初筛符合 → 感谢并邀约初试', '投递-不符合': '主动投递、初筛不符合 → 礼貌婉拒', '投递-待确认': '主动投递、简历信息不全 → 先问关键信息',
+  const AR_CATS = { '跟进': '对方久未回复时的主动跟进（见下方“主动跟进”设置）', '投递-符合': '主动投递、初筛符合 → 感谢并邀约初试', '投递-不符合': '主动投递、初筛不符合 → 礼貌婉拒', '投递-待确认': '主动投递、简历信息不全 → 先问关键信息',
     提问: '学校在哪？上几节课？', 提供信息: '有初中数学教资，2 月能到岗', 约面时间: '明天下午可以去面试', 确认参加: '好的，我会准时到',
     改期: '明天有事，能改个时间吗', 拒绝: '不考虑了，已经找到了', 议价: '工资能保证一万吗', 要求真人: '我想找真人聊', 交换联系方式: '可以加个微信吗', 其他: '其他消息' };
   m.innerHTML = ph('设置', '插件、AI 模型、初筛规则、面试时段、面试官和知识库。修改后点对应区块的“保存”。') + `
@@ -518,6 +518,11 @@ async function vSettings(m) {
         <label class="fi">每小时最多自动发送<input id="ar-max" type="number" value="${esc(AR.maxPerHour)}"></label>
         <label class="fi" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" id="ar-scan" style="width:auto" ${AR.scanUnread !== false ? 'checked' : ''}>自动打开有未读消息的会话</label>
         <label class="fi full" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" id="ar-inv" style="width:auto" ${AR.autoInvite !== false ? 'checked' : ''}>约定面试时间后，自动在平台点「约面试」发送面试邀约（全自动时）</label>
+        <label class="fi full" style="flex-direction:row;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="fu-on" style="width:auto" ${FU.enabled !== false ? 'checked' : ''}><b>主动跟进</b><span class="small muted">（对方不回复时，我们主动发一次跟进，引导继续沟通和约面）</span></label>
+        <label class="fi">打招呼后多少小时未回复就跟进<input id="fu-gh" type="number" step="0.5" min="0.5" value="${esc(FU.greetHours ?? 3)}"></label>
+        <label class="fi">已读后多少小时未回复就跟进<input id="fu-rh" type="number" step="0.5" min="0.5" value="${esc(FU.readHours ?? 1)}"></label>
+        <label class="fi" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" id="fu-read" style="width:auto" ${FU.onlyIfRead !== false ? 'checked' : ''}>对方显示“已读”才跟进</label>
+        <label class="fi">每位候选人最多跟进几次<input id="fu-max" type="number" min="1" value="${esc(FU.maxTotal ?? 3)}"></label>
         <label class="fi full">回复风格（让 AI 像真人一样说话）<textarea id="ar-style" style="min-height:70px">${esc(AR.style)}</textarea></label></div>
       <div class="inline-form"><button class="btn pri" id="ar-save">保存</button></div></div></div>
     <div class="card"><div class="card-h"><h3>AI 对候选人的身份</h3></div><div class="card-b"><div class="grid-form">
@@ -562,7 +567,9 @@ async function vSettings(m) {
     const d0 = Math.max(5, +$('#ar-d0').value || 25), d1 = Math.max(d0, +$('#ar-d1').value || 90);
     return { enabled: $('#ar-on').checked, hours: [$('#ar-h0').value || '08:30', $('#ar-h1').value || '21:00'], delayMin: d0, delayMax: d1,
       maxPerHour: Math.max(1, +$('#ar-max').value || 40), scanUnread: $('#ar-scan').checked, policy, style: $('#ar-style').value.trim(),
-      repeatLimit: Math.max(2, +$('#ar-rep').value || 2), autoInvite: $('#ar-inv').checked };
+      repeatLimit: Math.max(2, +$('#ar-rep').value || 2), autoInvite: $('#ar-inv').checked,
+      followup: { enabled: $('#fu-on').checked, greetHours: Math.max(0.5, +$('#fu-gh').value || 3), readHours: Math.max(0.5, +$('#fu-rh').value || 1),
+        onlyIfRead: $('#fu-read').checked, maxTotal: Math.max(1, +$('#fu-max').value || 3) } };
   };
   $('#ar-save').onclick = () => save({ autoReply: arBody() }, $('#ar-on').checked ? '已保存：全自动回复已开启' : '已保存');
   // roles: questions keep their field key when the wording is unchanged or by position

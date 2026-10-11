@@ -255,7 +255,11 @@
       await sleep(1200);
       const res = await new Promise(ok => { const h = e => { if (e.data?.__hra === 'main' && e.data.type === 'greetResult' && e.data.data.uid === r.uid) { window.removeEventListener('message', h); ok(e.data.data); } }; window.addEventListener('message', h); toMain('greet', { uid: r.uid }); setTimeout(() => ok({ ok: false, msg: '超时' }), 12000); });
       log(`${r.name}：${res.msg}`);
-      if (res.ok) { S.results[r.uid].greeted = true; if (!/已沟通过/.test(res.msg)) { S.done++; fails = 0; } paintLines(); draw(); }
+      if (res.ok) {
+        S.results[r.uid].greeted = true;
+        if (!/已沟通过/.test(res.msg)) { S.done++; fails = 0; api('/ext/greeted', { platform: PLATFORM, uid: r.uid, name: r.name, job: S.job }); }
+        paintLines(); draw();
+      }
       else skip.add(r.uid);
       if (res.dialog) { S.stop = true; why = '平台弹出窗口，需要人工处理（见上一条日志）'; break; }
       if (res.unverified && ++fails >= 3) { S.stop = true; why = '连续 3 位未确认成功，请看页面是否有提示'; break; }
@@ -380,6 +384,41 @@
   }
 
   // full-auto patrol: open the next conversation with unread messages when idle
+  // ---------- proactive follow-ups (打招呼久未回 / 已读不回) ----------
+  let lastFollowCheck = 0;
+  const followSkip = new Map(); // candidateId → retry after (ms)
+  async function tryFollowup() {
+    if (Date.now() - lastFollowCheck < 120000) return false;
+    lastFollowCheck = Date.now();
+    const r = await api('/ext/followups', { platform: PLATFORM });
+    const due = (r.data?.due || []).filter(x => !(followSkip.get(x.candidateId) > Date.now()));
+    if (!due.length) return false;
+    const f = due[0];
+    followSkip.set(f.candidateId, Date.now() + 15 * 60000); // whatever happens, not again for 15 min
+    const what = f.kind === 'greet' ? '打招呼后未回复' : '已读未回复';
+    note(`跟进：${f.name}（${what}）`);
+    const o = await callMain('openBy', { uid: f.uid, name: f.name }, 'openResult', 30000);
+    if (!o.ok) { log(`跟进 ${f.name}：${o.msg}`); return true; }
+    await sleep(2500);
+    const rs = await callMain('readState', {}, 'readStateResult');
+    if (rs.name && f.name && rs.name !== f.name) { log(`跟进 ${f.name}：没切换到这个会话，跳过`); return true; }
+    if (rs.lastDir !== 'out') { log(`跟进 ${f.name}：对方已有新消息，按正常流程回复`); return true; }
+    const d = await api('/ext/followup/draft', { candidateId: f.candidateId, kind: f.kind, messages: rs.messages || [], lastOutRead: rs.read });
+    if (d.error) { log(`跟进 ${f.name}：${d.error}`); return true; }
+    if (d.data.skip) { log(`跟进 ${f.name}：${d.data.why}`); return true; }
+    S.draft = d.data.draft; S.decision = d.data.decision; S.candidateId = d.data.candidateId;
+    S.lastSuggestSig = chatSig(S.chat); S.handledAt = Date.now();
+    const dc = S.decision || { mode: 'semi', why: '' };
+    log(`${f.name}：${what} → 跟进（${MODE_TXT[dc.mode]}）`);
+    if (dc.mode === 'auto' && S.auto?.enabled && !S.autoPaused && !S.risk) {
+      S.pending = { sig: S.lastSuggestSig, due: Date.now() + Math.min(dc.delayMs || 15000, 20000) };
+      const mine = S.pending;
+      setTimeout(() => { if (S.pending === mine) { S.pending = null; sendDraft(true); } }, mine.due - Date.now());
+    } else addTodo(dc.mode === 'human' ? 'human' : 'semi', `跟进（${what}）：${dc.why}`);
+    draw();
+    return true;
+  }
+
   // why the patrol is (not) moving, shown on the panel
   const note = t => {
     if (S.patrolNote === t) return;
@@ -417,6 +456,8 @@
       S.scanSkip.push(r.id); setTimeout(() => { S.scanSkip = S.scanSkip.filter(x => x !== r.id); }, 600000);
       addTodoFor(r.id, r.msg); log(r.msg); note(r.msg);
     } else if (r.none) {
+      // nothing unread: time for follow-ups on silent conversations
+      if (await tryFollowup()) return;
       const t = `没有未读会话（读到会话 ${r.sessions ?? '?'} 个、红色角标 ${r.badges ?? '?'} 个）`;
       note(t);
       if (t !== S.lastNoneLog) { S.lastNoneLog = t; log(`巡检：${t}`); }

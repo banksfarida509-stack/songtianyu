@@ -10,6 +10,7 @@ import { normalizeZhaopin, screen } from './rules.js';
 import { polishReasons, suggestReply, riskCheck, decideMode, guessTopic } from './ai.js';
 import { retrieve, kbStats, learnFromChats } from './kb.js';
 import { roleFor, screenRole, ROLE_KEYS, tongzhaoOf, eduSalesOf } from './roles.js';
+import { dueList, dueKind, convState, markFollowup, followupText } from './followup.js';
 import { llmConfigured, chat } from './llm.js';
 import { findSlot, book, autoSchedule, interviewerStatus, workDays, activeAppt, halfOf } from './schedule.js';
 import { todayCN, nowCN, j, s, clip, weekday, WEEK, randomToken } from './util.js';
@@ -160,6 +161,49 @@ route('POST', '/api/ext/diag', 'ext', async (req, res) => {
   setSetting(db, `diag_${kind}`, { at: nowCN(), data: str.length > 20000 ? { truncated: true, head: str.slice(0, 20000) } : b.data });
   send(res, 200, { ok: true });
 });
+// ---------- proactive follow-ups ----------
+// a greeting was sent from the recommend page (starts the “no reply in N hours” clock)
+route('POST', '/api/ext/greeted', 'ext', async (req, res) => {
+  const b = await body(req);
+  const platform = b.platform === 'boss' ? 'boss' : 'zhaopin';
+  const c = b.uid ? db.prepare('SELECT * FROM candidates WHERE platform=? AND uid=?').get(platform, String(b.uid)) : null;
+  if (!c) return send(res, 200, { ok: false });
+  db.prepare('UPDATE candidates SET greeted_ms=COALESCE(greeted_ms, ?), job=COALESCE(job, ?), attend=CASE WHEN attend=\'未联系\' THEN \'沟通中\' ELSE attend END WHERE id=?').run(Date.now(), clip(b.job, 40) || null, c.id);
+  addEvent(db, c.id, '已打招呼');
+  send(res, 200, { ok: true });
+});
+const followCfg = () => (getSetting(db, 'autoReply').followup || {});
+route('POST', '/api/ext/followups', 'ext', async (req, res) => {
+  const b = await body(req);
+  const ar = getSetting(db, 'autoReply'), cfg = followCfg();
+  const hm = nowCN().slice(11, 16), [h0, h1] = ar.hours || ['08:30', '21:00'];
+  if (!ar.enabled || cfg.enabled === false) return send(res, 200, { due: [], why: '全自动或主动跟进未开启' });
+  if (hm < h0 || hm > h1) return send(res, 200, { due: [], why: `不在自动回复时段（${h0}–${h1}）` });
+  const platform = b.platform === 'boss' ? 'boss' : 'zhaopin';
+  send(res, 200, { due: dueList(db, cfg).filter(x => x.platform === platform) });
+});
+// the conversation is open on the page: re-check, then write the follow-up
+route('POST', '/api/ext/followup/draft', 'ext', async (req, res) => {
+  const b = await body(req);
+  let c = getCand(Number(b.candidateId));
+  if (!c) return fail(res, 404, '候选人不存在');
+  storeMessages(c, (b.messages || []).slice(-40));
+  c = getCand(c.id);
+  const cfg = followCfg();
+  const kind = dueKind(c, convState(db, c), cfg);
+  if (!kind) return send(res, 200, { skip: true, why: '对方已经回复，或这次冷场已经跟进过' });
+  if (kind === 'read' && cfg.onlyIfRead !== false && b.lastOutRead === false) return send(res, 200, { skip: true, why: '对方还没读我们的消息，先不跟进' });
+  const st = settingsAll();
+  const role = roleOf(c.job);
+  const offer = ['am', 'pm'].map(half => findSlot(db, { half })).filter(Boolean);
+  const history = db.prepare('SELECT dir,text FROM messages WHERE candidate_id=? ORDER BY id').all(c.id);
+  const t = await followupText(kind, c, history, { settings: st, db, role, offer });
+  const draft = { intent: '跟进', reply: t.reply, parts: [t.reply], followup: kind, checks: { guard: [], platform: [] }, blocked: false, handoff: false,
+    byAi: t.byAi, model: t.model, slots: {}, topic: '其他', asked: 1 };
+  const decision = decideMode(draft, { autoReply: st.autoReply, override: c.chat_mode || null, nowHM: nowCN().slice(11, 16), sentLastHour: autoSentLastHour() });
+  send(res, 200, { candidateId: c.id, draft, decision, kind });
+});
+
 // result of an automatic interview invitation
 route('POST', '/api/ext/chat/invited', 'ext', async (req, res) => {
   const b = await body(req);
@@ -344,6 +388,7 @@ route('POST', '/api/ext/chat/applied', 'ext', async (req, res) => {
   const d = b.draft || {};
   if (d.reply) db.prepare('INSERT INTO messages(candidate_id,dir,by,text,at) VALUES(?,?,?,?,?)').run(c.id, 'out', b.auto ? 'ai-auto' : 'ai', clip(d.reply, 1000), nowCN());
   if (b.auto) addEvent(db, c.id, `AI 全自动回复（${d.intent || ''}）`);
+  if (d.followup && d.reply) { markFollowup(db, getCand(c.id), d.followup); addEvent(db, c.id, d.followup === 'greet' ? '打招呼未回复，已发跟进' : '已读未回复，已发跟进'); }
   applyDraft(c, d);
   send(res, 200, { ok: true, candidate: candOut(getCand(c.id)) });
 });
