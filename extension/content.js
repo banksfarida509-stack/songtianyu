@@ -372,7 +372,7 @@
       return draw();
     }
     S.lastSuggestSig = sig; S.busy = true; S.draft = null; S.decision = null; S.pending = null; draw();
-    const r = await api('/ext/chat/suggest', { platform: PLATFORM, sessionId: c.sessionId, uid: c.uid, name: c.name, job: c.job, origin: c.origin, profile: c.profile, messages: c.messages });
+    const r = await api('/ext/chat/suggest', { platform: PLATFORM, sessionId: c.sessionId, uid: c.uid, name: c.name, job: c.job, origin: c.origin, profile: c.profile, phones: c.phones || [], messages: c.messages });
     S.busy = false;
     if (suggestQueued !== null) { const f = suggestQueued; suggestQueued = null; if (chatSig(S.chat) !== sig || f) return suggest(f); }
     if (chatSig(S.chat) !== sig) return; // conversation moved on while waiting
@@ -552,6 +552,12 @@
         S.pending = null;
       }
       S.chat = d.data;
+      // record a mobile number the page shows for this candidate (once per conversation and number)
+      const phoneSig = `${d.data.sessionId}:${(d.data.phones || []).join(',')}`;
+      if ((d.data.phones || []).length && S.phoneSig !== phoneSig) {
+        S.phoneSig = phoneSig;
+        api('/ext/chat/phones', { platform: PLATFORM, sessionId: d.data.sessionId, uid: d.data.uid, name: d.data.name, job: d.data.job, phones: d.data.phones });
+      }
       if (changed) { S.draft = null; S.decision = null; S.chatMode = null; S.candidateId = null; S.screen = null; }
       suggest(false);
     }

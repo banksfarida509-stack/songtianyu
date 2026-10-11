@@ -134,6 +134,8 @@ export function openDb(file) {
   // the recruiter's own note on a candidate (人才池“备注”列), and a role set by hand (not overwritten by job-title matching)
   if (!ccols.includes('staff_note')) db.exec('ALTER TABLE candidates ADD COLUMN staff_note TEXT');
   if (!ccols.includes('role_manual')) db.exec('ALTER TABLE candidates ADD COLUMN role_manual INTEGER NOT NULL DEFAULT 0');
+  // the candidate's mobile number once the platform shows it to the recruiter (exchange / message / unlocked resume)
+  if (!ccols.includes('phone')) db.exec('ALTER TABLE candidates ADD COLUMN phone TEXT');
   dedupeBossIds(db);
   // job roles: each candidate and each knowledge-base document belongs to a role (通用 = all)
   if (!db.prepare('PRAGMA table_info(candidates)').all().some(c => c.name === 'role')) db.exec("ALTER TABLE candidates ADD COLUMN role TEXT NOT NULL DEFAULT 'teacher'");

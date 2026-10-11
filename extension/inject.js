@@ -39,6 +39,8 @@
   // whitelist: no avatar, phone, ids beyond resumeNumber
   function pick(c) {
     return {
+      // only a number the platform already shows in full (masked ones are dropped by the server)
+      phone: [c.phone, c.mobile, c.mobilePhone, c.telephone].find(v => typeof v === 'string' || typeof v === 'number') || '',
       intentText: texts([c.desiredJobType, c.preferredJobType, c.desiredJobTypeHighlights, c.desiredJobTypeName, c.jobIntention, c.purposeJobType]).join(' ').slice(0, 200),
       resumeNumber: c.resumeNumber, userName: c.userName, gender: c.gender, age: c.age, educationLevel: c.educationLevel,
       workYears: c.workYears, workYearsLabel: c.workYearsLabel, careerStatus: c.careerStatus, desiredSalary: c.desiredSalary,
@@ -138,6 +140,29 @@
     }
     return out.slice(-n);
   }
+  // Mobile numbers the platform shows for this conversation: phone-named fields on the
+  // session, and phone-named fields / “手机 …” texts inside the candidate's own cards
+  // (exchange-phone card). Other long numbers (account ids) are ignored.
+  const MOBILE = /(?<!\d)1[3-9]\d{9}(?!\d)/;
+  const PHONE_KEY = /phone|mobile|^tel$|telephone/i;
+  function phonesOf(sess, tl) {
+    const out = new Set();
+    const add = v => { const m = String(v || '').replace(/[\s-]/g, '').match(MOBILE); if (m) out.add(m[0]); };
+    const walk = (o, d, keyHint) => {
+      if (o == null || d > 4) return;
+      if (typeof o === 'string') {
+        const s = o.trim();
+        if (/^[[{]/.test(s)) { try { return walk(JSON.parse(s), d + 1, keyHint); } catch { /* not JSON */ } }
+        if (keyHint || /手机|电话/.test(s)) add(s);
+        return;
+      }
+      if (typeof o === 'number') { if (keyHint) add(o); return; }
+      if (typeof o === 'object') for (const [k, v] of Object.entries(o)) walk(v, d + 1, PHONE_KEY.test(k));
+    };
+    for (const [k, v] of Object.entries(sess || {})) if (PHONE_KEY.test(k) && (typeof v === 'string' || typeof v === 'number')) add(v);
+    for (const m of tl) if (m && m.flow === 'in' && m.type !== 'text') for (const k of ['custom', 'content', 'attach', 'pushPayload']) walk(m[k], 0, false);
+    return [...out].slice(0, 3);
+  }
   let lastChatSig = '';
   const profileCache = new Map();
   function readChat() {
@@ -152,7 +177,7 @@
     // the resume panel may render after the messages; retry until found
     if (!profileCache.get(st.activeSessionId)) { try { profileCache.set(st.activeSessionId, resumeFor(sess)); } catch { /* try again next time */ } }
     post('chat', { sessionId: st.activeSessionId, uid: sess.resumeNumber || '', name: nameOf(sess), job: sess.jobTitle || '', state: sess.candidateState || '',
-      origin: originOf(tl), profile: profileCache.get(st.activeSessionId), messages: msgs });
+      origin: originOf(tl), profile: profileCache.get(st.activeSessionId), phones: phonesOf(sess, tl), messages: msgs });
   }
 
   // ---------- actions (only on explicit request from the recruiter) ----------
@@ -439,7 +464,8 @@
         msgs = msgsOf(st, st.activeSessionId);
       }
       const cur = st.currentSession && sessId(st.currentSession) === id ? st.currentSession : s;
-      if (msgs.length) out.push({ sessionId: id, uid: cur.resumeNumber || s.resumeNumber || '', name: nameOf(cur) || nameOf(s), job: cur.jobTitle || s.jobTitle || '', messages: msgs });
+      if (msgs.length) out.push({ sessionId: id, uid: cur.resumeNumber || s.resumeNumber || '', name: nameOf(cur) || nameOf(s), job: cur.jobTitle || s.jobTitle || '', messages: msgs,
+        phones: phonesOf(cur, (st.timelineMap?.[st.activeSessionId]?.timeline) || []) });
       post('historyProgress', { reqId, done: i + 1, total: list.length, name: nameOf(s) });
     }
     collecting = false;

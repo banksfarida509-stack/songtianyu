@@ -14,9 +14,16 @@ const num = v => {
   return m ? Number(m[0]) : null;
 };
 
+/** a full mainland mobile number in a text, or '' (masked numbers like 138****1234 do not count) */
+export function mobileIn(text) {
+  const m = String(text || '').replace(/[\s-]/g, '').match(/(?<!\d)1[3-9]\d{9}(?!\d)/);
+  return m ? m[0] : '';
+}
+
 /**
- * Field whitelist: only what screening needs. Photos, phone numbers and
- * ID numbers are never accepted even if a client sends them.
+ * Field whitelist: only what screening needs, plus the mobile number when the
+ * platform already shows it in full to the recruiter. Photos and ID numbers are
+ * never accepted even if a client sends them.
  */
 export function normalizeZhaopin(raw) {
   const work = (raw.workExperiences || []).slice(0, 6).map(w => ({
@@ -46,6 +53,7 @@ export function normalizeZhaopin(raw) {
     skills: (raw.skillTags || []).slice(0, 12).map(x => clip(x, 20)),
     certs: (raw.certificateNames || []).slice(0, 10).map(x => clip(x, 40)),
     self_eval: clip(raw.selfEvaluation, 400),
+    phone: mobileIn(raw.phone),
   };
 }
 

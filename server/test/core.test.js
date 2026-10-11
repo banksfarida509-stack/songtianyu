@@ -26,7 +26,9 @@ test('normalize keeps only whitelisted fields', () => {
   assert.equal(n.uid, 'R1');
   assert.equal(n.age, 27);
   assert.equal(n.school, '东北师范大学');
-  assert.ok(!('phone' in n) && !('avatar' in n));
+  assert.ok(!('avatar' in n));
+  assert.equal(n.phone, '13800000000');                                         // shown in full → kept
+  assert.equal(normalizeZhaopin(card({ phone: '138****0000' })).phone, '');     // masked → not kept
 });
 
 test('screen: good candidate is 推荐 with reason', () => {

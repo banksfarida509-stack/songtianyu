@@ -100,6 +100,18 @@
     const e = [...document.querySelectorAll('[class*="position"], [class*="job-name"], [class*="job"]')].find(x => visible(x) && /教师|老师|教/.test(textOf(x)) && textOf(x).length < 40);
     return e ? textOf(e).replace(/^沟通职位[:：]?/, '').trim() : '';
   }
+  // a number the page shows for this candidate after exchanging phones (“手机号：13…”), in the conversation area
+  function shownPhones() {
+    const out = new Set();
+    for (const e of document.querySelectorAll('span, div, p, em, b')) {
+      if (e.children.length > 3) continue;
+      const t = (e.textContent || '').replace(/[\s-]/g, '');
+      if (t.length > 60 || !/手机|电话/.test(t)) continue;
+      const m = t.match(/(?<!\d)1[3-9]\d{9}(?!\d)/);
+      if (m && visible(e) && e.getBoundingClientRect().left > window.innerWidth * 0.3) out.add(m[0]);
+    }
+    return [...out].slice(0, 2);
+  }
   let lastSig = '';
   function readChat() {
     if (!isChat() || collecting) return;
@@ -114,7 +126,7 @@
     lastSig = sig;
     const first = msgs[0];
     post('chat', { sessionId: `boss:${name}:${currentJob()}`, uid: '', name, job: currentJob(), state: '',
-      origin: first ? (first.dir === 'in' ? 'applied' : 'greeted') : 'unknown', profile: null, messages: msgs });
+      origin: first ? (first.dir === 'in' ? 'applied' : 'greeted') : 'unknown', profile: null, messages: msgs, phones: shownPhones() });
   }
 
   // ---------- input / send ----------

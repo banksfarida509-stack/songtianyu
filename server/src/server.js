@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { openDb, getSetting, setSetting, addEvent } from './db.js';
-import { normalizeZhaopin, screen } from './rules.js';
+import { normalizeZhaopin, screen, mobileIn } from './rules.js';
 import { polishReasons, suggestReply, riskCheck, decideMode, guessTopic, reviewScreen, applyReview } from './ai.js';
 import { retrieve, kbStats, learnFromChats } from './kb.js';
 import { roleFor, screenRole, ROLE_KEYS, tongzhaoOf, eduSalesOf } from './roles.js';
@@ -87,7 +87,7 @@ function candOut(c, full = false) {
     id: c.id, platform: c.platform, uid: c.uid, name: c.name, age: c.age, edu: c.edu, school: c.school, schoolTag: c.school_tag,
     major: c.major, years: c.years, careerStatus: c.career_status, expect: c.expect, job: c.job,
     verdict: c.verdict, score: c.score, reason: c.reason, reasonBy: c.reason_by, attend: c.attend, handoff: !!c.handoff,
-    role: c.role || 'teacher', roleName: (getSetting(db, 'roles')[c.role || 'teacher'] || {}).name || '教师', roleManual: !!c.role_manual, staffNote: c.staff_note || '',
+    role: c.role || 'teacher', roleName: (getSetting(db, 'roles')[c.role || 'teacher'] || {}).name || '教师', roleManual: !!c.role_manual, staffNote: c.staff_note || '', phone: c.phone || '',
     pref: j(c.pref_json, {}), slots: j(c.slots_json, {}), lastNote: c.last_note, source: c.source, owner: c.owner,
     isDemo: !!c.is_demo, createdAt: c.created_at, updatedAt: c.updated_at, appt: appt || null,
   };
@@ -290,6 +290,16 @@ route('POST', '/api/ext/kb/docs', 'ext', async (req, res) => {
   try { send(res, 200, { ok: true, id: addDoc(b, '插件'), stats: kbStats(db) }); } catch (e) { fail(res, 400, e.message); }
 });
 
+// a mobile number shown on the open conversation (sent even when no reply is needed)
+route('POST', '/api/ext/chat/phones', 'ext', async (req, res) => {
+  const b = await body(req);
+  const phones = (b.phones || []).map(mobileIn).filter(Boolean).slice(0, 3);
+  if (!phones.length) return send(res, 200, { ok: false });
+  const c = chatCandidate(b.platform === 'boss' ? 'boss' : 'zhaopin', b);
+  for (const p of phones) savePhone(c, p, '平台已显示');
+  send(res, 200, { ok: true });
+});
+
 // past conversations collected by the extension (stored only; no replies generated)
 route('POST', '/api/ext/chat/history', 'ext', async (req, res) => {
   const b = await body(req);
@@ -299,6 +309,7 @@ route('POST', '/api/ext/chat/history', 'ext', async (req, res) => {
     if (!sess || !(sess.messages || []).length) continue;
     const c = chatCandidate(platform, sess);
     msgs += storeMessages(c, sess.messages.slice(-200)); conv++;
+    for (const p of (sess.phones || []).slice(0, 3)) savePhone(c, p, '平台已显示');
     if (c.attend === '未联系') db.prepare("UPDATE candidates SET attend='沟通中' WHERE id=?").run(c.id);
   }
   send(res, 200, { ok: true, conversations: conv, newMessages: msgs });
@@ -326,6 +337,7 @@ route('POST', '/api/ext/screen', 'ext', async (req, res) => {
     const ex = db.prepare('SELECT * FROM candidates WHERE platform=? AND uid=?').get(platform, n.uid);
     const sc = screenFor(n, b.job, ex);
     const c = upsertScreened(platform, clip(b.job, 40) || null, n, sc, platform === 'zhaopin' ? '智联 推荐列表' : 'BOSS');
+    if (n.phone) savePhone(c, n.phone, '简历');
     out.push({ uid: n.uid, id: c.id, verdict: c.verdict, score: c.score, reason: c.reason, reasonBy: c.reason_by, attend: c.attend });
   }
   send(res, 200, { results: out, role: { key: role.key, name: role.name } });
@@ -366,17 +378,28 @@ function chatCandidate(platform, b) {
     c = db.prepare('SELECT * FROM candidates WHERE platform=? AND uid=?').get(platform, uid);
     if (c) return c;
     const now = nowCN();
-    const r = db.prepare(`INSERT INTO candidates(platform,uid,name,job,attend,source,created_at,updated_at,verdict,score,reason,reason_by)
-      VALUES(?,?,?,?,'沟通中',?,?,?,'待确认',50,'仅有聊天记录，未读取简历','rule')`).run(platform, uid, clip(b.name, 20), clip(b.job, 40), platform === 'zhaopin' ? '智联 聊天' : 'BOSS 聊天', now, now);
+    const r = db.prepare(`INSERT INTO candidates(platform,uid,name,job,role,attend,source,created_at,updated_at,verdict,score,reason,reason_by)
+      VALUES(?,?,?,?,?,'沟通中',?,?,?,'待确认',50,'仅有聊天记录，未读取简历','rule')`).run(platform, uid, clip(b.name, 20), clip(b.job, 40), roleOf(b.job).key, platform === 'zhaopin' ? '智联 聊天' : 'BOSS 聊天', now, now);
     c = getCand(Number(r.lastInsertRowid));
   }
   return c;
+}
+// record a mobile number for the candidate (first one wins unless replaced by hand)
+function savePhone(c, phone, how) {
+  const p = mobileIn(phone);
+  if (!p || !c || c.phone === p) return;
+  if (c.phone && how !== 'staff') return;
+  db.prepare('UPDATE candidates SET phone=? WHERE id=?').run(p, c.id);
+  c.phone = p;
+  addEvent(db, c.id, `登记手机号（${how}）：${p.slice(0, 3)}****${p.slice(-4)}`);
 }
 function storeMessages(c, list) {
   const ins = db.prepare('INSERT OR IGNORE INTO messages(candidate_id,dir,by,text,platform_msg_id,at) VALUES(?,?,?,?,?,?)');
   let n = 0;
   for (const m of list) {
     if (!m || !m.text) continue;
+    // a number the candidate sent us (typed or in an exchange card)
+    if (m.dir === 'in') savePhone(c, m.text, '聊天中对方发来');
     n += ins.run(c.id, m.dir === 'in' ? 'in' : 'out', m.dir === 'in' ? 'candidate' : 'staff', clip(m.text, 1000), String(m.id || crypto.createHash('md5').update(m.dir + m.text + (m.at || '')).digest('hex')), clip(m.at, 30) || nowCN()).changes;
   }
   return n;
@@ -421,6 +444,9 @@ route('POST', '/api/ext/chat/suggest', 'ext', async (req, res) => {
     }
   }
   storeMessages(c, (b.messages || []).slice(-40));
+  // numbers the page shows for this conversation (exchange card / unlocked resume)
+  for (const p of (b.phones || []).slice(0, 3)) savePhone(c, p, '平台已显示');
+  if (b.profile && b.profile.phone) savePhone(c, b.profile.phone, '简历');
   if (c.attend === '未联系') db.prepare("UPDATE candidates SET attend='沟通中' WHERE id=?").run(c.id);
   const cx = chatContext(c.id);
   const st = settingsAll();
@@ -513,7 +539,7 @@ route('GET', '/api/candidates', 'admin', (req, res, p, u, q) => {
   const where = [], args = [];
   if (q.get('attend')) { where.push('attend=?'); args.push(q.get('attend')); }
   if (q.get('verdict')) { where.push('verdict=?'); args.push(q.get('verdict')); }
-  if (q.get('q')) { where.push("(name LIKE ? OR school LIKE ? OR major LIKE ? OR job LIKE ? OR staff_note LIKE ?)"); const v = `%${q.get('q')}%`; args.push(v, v, v, v, v); }
+  if (q.get('q')) { where.push("(name LIKE ? OR school LIKE ? OR major LIKE ? OR job LIKE ? OR staff_note LIKE ? OR phone LIKE ?)"); const v = `%${q.get('q')}%`; args.push(v, v, v, v, v, v); }
   // 岗位 filter (教师 / 学管师 / 课程顾问 / 其他) and 备注 filter (有备注 / 无备注 / a word in the note)
   if (q.get('role') && ROLE_KEYS.includes(q.get('role'))) { where.push("COALESCE(role,'teacher')=?"); args.push(q.get('role')); }
   const note = q.get('note') || '';
@@ -551,6 +577,12 @@ route('PATCH', '/api/candidates/:id', 'admin', async (req, res, p) => {
     addEvent(db, c.id, `专员改判：${b.verdict}${b.reason ? '（' + clip(b.reason, 40) + '）' : ''}`);
   }
   if (typeof b.note === 'string') db.prepare('UPDATE candidates SET last_note=? WHERE id=?').run(clip(b.note, 120), c.id);
+  if (typeof b.phone === 'string') {
+    const p = b.phone.trim();
+    if (p && !mobileIn(p)) return fail(res, 400, '请输入 11 位手机号');
+    if (p) savePhone(c, p, 'staff');
+    else { db.prepare('UPDATE candidates SET phone=NULL WHERE id=?').run(c.id); addEvent(db, c.id, '清空手机号'); }
+  }
   if (typeof b.staffNote === 'string') {
     db.prepare('UPDATE candidates SET staff_note=? WHERE id=?').run(clip(b.staffNote.trim(), 300), c.id);
     addEvent(db, c.id, b.staffNote.trim() ? `备注：${clip(b.staffNote.trim(), 60)}` : '清空备注');
