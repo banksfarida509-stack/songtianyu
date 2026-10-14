@@ -124,7 +124,8 @@ function screenFor(n, job, ex) {
   const rules = getSetting(db, 'rules');
   // graduation year is a hard rule for every role (in-school students are not recruited)
   const sc = applyGradRule({ ...(role.key === 'teacher' ? screen(n, rules) : screenRole(n, role)), roleKey: role.key }, n, rules.maxGradYear);
-  if (sc.gradFail) return sc;
+  // a failed hard rule (graduation year, education) decides; an earlier AI widening does not survive it
+  if (sc.rules.some(r => r.hard && r.ok === false)) return sc;
   // keep an earlier AI review against the notes if the rule verdict and the notes are the same as then
   const prev = ex && j(ex.rules_json, []).find(r => r.id === 'AI');
   if (prev && prev.ruleVerdict === sc.verdict && prev.notesHash === notesHash(role.notes)) {

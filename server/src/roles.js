@@ -190,7 +190,7 @@ export function screenRole(c, role) {
 
   const r = [];
   r.push({ id: 'R01', name: `年龄 ≤ ${R.maxAge ?? 35}`, ok: c.age == null ? null : c.age <= (R.maxAge ?? 35), ev: c.age == null ? '页面未显示年龄' : `${c.age} 岁` });
-  r.push({ id: 'R02', name: `学历 ${R.minEdu || '大专'}及以上`, ok: eduRank(c.edu) < 0 ? null : eduRank(c.edu) >= eduRank(R.minEdu || '大专'), ev: c.edu || '页面未显示学历' });
+  r.push({ id: 'R02', name: `学历 ${R.minEdu || '大专'}及以上`, ok: eduRank(c.edu) < 0 ? null : eduRank(c.edu) >= eduRank(R.minEdu || '大专'), ev: c.edu || '页面未显示学历', hard: true });
   r.push({ id: 'R03', name: `${role.name}相关经历`, ok: !!expHit, ev: expHit ? `命中“${expHit}”` : (hay || '无工作经历') });
   r.push({ id: 'R04', name: '求职意向相关', ok: !!intentHit, ev: intentHit ? `求职方向含“${intentHit}”` : '求职方向未体现' });
   // R05 统招: required unless (咨询师) the candidate sold for an education company
@@ -199,7 +199,7 @@ export function screenRole(c, role) {
     tz = tongzhaoOf(c.edus, R.minEdu);
     eduSales = R.eduSalesException ? eduSalesOf(c.work) : null;
     const ok = tz === true || (eduSales ? true : tz);
-    r.push({ id: 'R05', name: `统招${R.minEdu || '大专'}及以上${R.eduSalesException ? '（教育行业销售经验可放宽）' : ''}`, ok,
+    r.push({ id: 'R05', name: `统招${R.minEdu || '大专'}及以上${R.eduSalesException ? '（教育行业销售经验可放宽）' : ''}`, ok, hard: true,
       ev: tz === true ? '统招' : eduSales ? `${tz === false ? '非统招，' : ''}有教育行业销售经验（${eduSales.org} ${eduSales.role}）` : tz === false ? '非统招学历' : '简历未显示是否统招' });
   }
   const tzRule = r.find(x => x.id === 'R05');

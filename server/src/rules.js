@@ -107,6 +107,36 @@ export function applyGradRule(sc, c, maxGradYear) {
   return { ...sc, verdict: '不推荐', score: Math.min(sc.score, 40), rules: [...sc.rules, rule], reason: `${y} 年毕业（还在上学），只招 ${max} 年及以前毕业的`, gradFail: true };
 }
 
+const NON_TZ = /非统招|自考|成人|函授|网络|业余|非全日制|开放|夜大/;
+const ZHUAN_SCHOOL = /职业学院|职业技术学院|高等专科|专科学校|高职|职业大学(?!.*本科)|专修学院/;
+const yearOf = s => { const m = String(s || '').match(/(?:19|20)\d{2}/); return m ? Number(m[0]) : null; };
+// start / end year of an education entry (separate fields since v0.9.3, else the “start-end” text)
+const spanOf = e => {
+  if ('begin' in e || 'end' in e) return [yearOf(e.begin), /至今|今|在读/.test(e.end || '') ? null : yearOf(e.end)];
+  const ys = (String(e.t || '').match(/(?:19|20)\d{2}/g) || []).map(Number);
+  return ys.length >= 2 ? [ys[0], ys[ys.length - 1]] : [null, null];
+};
+/**
+ * 统招全日制本科 as the first degree. Returns { ok, ev }: ok false for 专升本 (a 大专 entry
+ * before the 本科, or a 本科 of two years or less), a 本科 marked 非统招 / 自考 …, or no 本科 at all;
+ * null when the resume has no 本科 entry details to judge from.
+ */
+export function bachelorCheck(c) {
+  const edus = c.edus || [];
+  const bach = edus.filter(e => eduRank(e.deg) === 3);
+  if (!bach.length) {
+    if (eduRank(c.edu) >= 0 && eduRank(c.edu) < 3) return { ok: false, ev: `${c.edu}学历` };
+    return { ok: null, ev: '简历没有本科学历的详细信息' };
+  }
+  const isZhuan = e => eduRank(e.deg) === 2 || (eduRank(e.deg) < 0 && ZHUAN_SCHOOL.test(e.school || ''));
+  const zhuan = edus.find(isZhuan);
+  if (zhuan) return { ok: false, ev: `专升本（大专：${zhuan.school || '专科院校'}）` };
+  const short = bach.find(e => { const [b, en] = spanOf(e); return b && en && en - b <= 2; });
+  if (short) { const [b, en] = spanOf(short); return { ok: false, ev: `本科只读了 ${en - b} 年（${short.school || ''} ${b}–${en}），按专升本处理` }; }
+  if (bach.every(e => NON_TZ.test(e.mode || ''))) return { ok: false, ev: `本科非统招（${bach[0].mode}）` };
+  return { ok: true, ev: `${bach[0].school || ''} 本科${/统招|全日制/.test(bach[0].mode || '') ? '（统招）' : ''}` };
+}
+
 export function screen(c, rules) {
   const re = p => new RegExp(p);
   const titles = c.work.map(w => `${w.org} ${w.role}`).join(' | ');
@@ -119,7 +149,11 @@ export function screen(c, rules) {
 
   const r = [];
   r.push({ id: 'R01', name: `年龄 ≤ ${rules.maxAge}`, ok: c.age == null ? null : c.age <= rules.maxAge, ev: c.age == null ? '页面未显示年龄' : `${c.age} 岁` });
-  r.push({ id: 'R02', name: `学历 ${rules.minEdu}及以上`, ok: eduRank(c.edu) < 0 ? null : eduRank(c.edu) >= eduRank(rules.minEdu), ev: c.edu || '页面未显示学历' });
+  // education is a hard requirement: the AI notes review never widens it
+  r.push({ id: 'R02', name: `学历 ${rules.minEdu}及以上`, ok: eduRank(c.edu) < 0 ? null : eduRank(c.edu) >= eduRank(rules.minEdu), ev: c.edu || '页面未显示学历', hard: true });
+  // 统招全日制本科, first degree 本科 (no 专升本 / 非统招)
+  const bc = rules.requireTongzhaoBachelor ? bachelorCheck(c) : null;
+  if (bc && bc.ok !== null) r.push({ id: 'R06', name: '统招全日制本科（不含专升本、非统招）', ok: bc.ok, ev: bc.ev, hard: true });
   r.push({ id: 'R03', name: '专业或教学经历对口', ok: !!kwHit, ev: kwHit ? `命中“${kwHit}”：${c.major || ''}` : `${c.major || '专业未知'}；${titles || '无工作经历'}` });
   let r4ok, r4ev;
   if (schoolTeach) { r4ok = true; r4ev = `${schoolTeach.org} · ${schoolTeach.role}`; }
@@ -153,6 +187,6 @@ export function screen(c, rules) {
   if (verdict === '推荐' && intentPass) reason = `${c.age} 岁 ${c.edu}，${c.school || ''} ${c.major || ''}；无教学经验，但求职方向是“${intentHit}”（意向型）`;
   else if (verdict === '推荐') reason = `${c.school || ''}${c.school_tag ? ' ' + c.school_tag : ''} ${c.major || ''}；${schoolTeach ? schoolTeach.role || '学校教学经历' : '师范背景'}${hasCert ? '；有教师资格证' : '；资格证待追问'}`;
   else if (verdict === '待确认') reason = `${u.ev}，需你确认`;
-  else reason = f.id === 'R01' ? `年龄 ${c.age} 岁，超过 ${rules.maxAge} 岁上限` : f.id === 'R02' ? `${c.edu}学历，要求${rules.minEdu}及以上` : f.id === 'R03' ? `${c.major || '专业'}与岗位科目不对口` : `无学校教学经历：${f.ev}`;
+  else reason = f.id === 'R06' ? `${f.ev}，教师岗要求统招全日制本科` : f.id === 'R01' ? `年龄 ${c.age} 岁，超过 ${rules.maxAge} 岁上限` : f.id === 'R02' ? `${c.edu}学历，要求${rules.minEdu}及以上` : f.id === 'R03' ? `${c.major || '专业'}与岗位科目不对口` : `无学校教学经历：${f.ev}`;
   return { verdict, score, rules: r, reason: clip(reason.trim(), 80) };
 }
