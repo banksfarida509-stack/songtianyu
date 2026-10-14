@@ -68,14 +68,16 @@ async function keepIm(focusPlatform) {
     }
   } catch (e) { console.warn('[hra] keepIm', e); } finally { opening = false; }
 }
-chrome.alarms.create('keepIm', { periodInMinutes: 1 });
+// create the alarm only once: re-creating it on every service-worker start would reset its
+// timer, and the worker restarts more often than once a minute while pages are pinging
+chrome.alarms.get('keepIm').then(a => { if (!a) chrome.alarms.create('keepIm', { periodInMinutes: 1 }); });
 chrome.alarms.onAlarm.addListener(a => { if (a.name === 'keepIm') keepIm(); });
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   // a recruiting page reports in (from its ping): remember the platform is in use and whether to keep its 消息 page
   if (msg?.type === 'seen') {
     const p = msg.platform === 'boss' ? 'boss' : 'zhaopin';
-    chrome.storage.local.set({ [`seen_${p}`]: Date.now(), keepIm: !!msg.keepIm });
+    chrome.storage.local.set({ [`seen_${p}`]: Date.now(), keepIm: !!msg.keepIm }).then(() => { if (msg.keepIm) keepIm(); });
     return;
   }
   if (msg?.type === 'openIm') { keepIm(msg.platform === 'boss' ? 'boss' : 'zhaopin'); return; }
