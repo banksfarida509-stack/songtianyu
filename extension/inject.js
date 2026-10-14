@@ -51,14 +51,46 @@
       selfEvaluation: typeof c.selfEvaluation === 'string' ? c.selfEvaluation.slice(0, 400) : '',
     };
   }
+  // The job the recommend list is showing. Switching the job tabs at the top does not always
+  // change the URL, so the tab marked active on the page comes first, then the recommend
+  // module's state, then the URL's jobNumber, then a bold job title near the top.
   function currentJob() {
     try {
+      const store = rootVm()?.$store;
+      const list = store?.state?.jobs?.jobList || [];
+      const titleOf = j => (j && (j.jobTitle || j.jobName || j.title)) || '';
+      const titles = list.map(titleOf).filter(Boolean);
+      const asTitle = t => { t = (t || '').trim(); return titles.find(x => x === t) || titles.find(x => t.length >= 2 && (x.startsWith(t) || t.startsWith(x))) || ''; };
+      const near = e => { const r = e.getBoundingClientRect(); return r.top < 260 && r.height < 60; };
+      const leaves = [...document.querySelectorAll('div, span, a, li, p')].filter(e => e.children.length === 0 && asTitle(e.textContent) && visible(e) && near(e));
+      const active = leaves.find(e => { for (let el = e, k = 0; el && k < 3; el = el.parentElement, k++) if (/active|selected|current|checked/i.test(String(el.className || '')) || el.getAttribute('aria-selected') === 'true') return true; return false; });
+      if (active) return asTitle(active.textContent);
+      for (const mod of ['recommend', 'recommendTalent', 'talent', 'recommendList']) {
+        const s = store?.state?.[mod];
+        if (!s || typeof s !== 'object') continue;
+        for (const [k, v] of Object.entries(s)) if (/jobNumber|jobId/i.test(k) && v) { const j = list.find(x => x.jobNumber === v || x.jobId === v); if (j) return titleOf(j); }
+      }
       const num = new URLSearchParams(location.search).get('jobNumber');
-      const list = rootVm()?.$store?.state?.jobs?.jobList || [];
-      const j = list.find(x => x.jobNumber === num);
-      return (j && (j.jobTitle || j.jobName || j.title)) || '';
+      const j = num && list.find(x => x.jobNumber === num);
+      if (j) return titleOf(j);
+      const bold = leaves.find(e => +getComputedStyle(e).fontWeight >= 600);
+      return bold ? asTitle(bold.textContent) : '';
     } catch { return ''; }
   }
+  // a greeting the recruiter clicked by hand on a card (our own clicks are not trusted events)
+  document.addEventListener('click', e => {
+    if (!e.isTrusted || !location.pathname.includes('/app/recommend')) return;
+    const b = e.target.closest && e.target.closest('button, .resume-button, .km-button, [role="button"]');
+    if (!b || (b.innerText || '').trim() !== '打招呼') return;
+    const scope = b.closest('.recommend-item');
+    const el = scope && (scope.querySelector('[data-hra-uid]') || (scope.hasAttribute('data-hra-uid') ? scope : null));
+    const uid = el && el.getAttribute('data-hra-uid');
+    if (!uid) return;
+    setTimeout(() => {
+      const now = findGreetBtn(scope);
+      if (!now || (now.innerText || '').trim() !== '打招呼' || openDialogText()) post('manualGreet', { uid, job: currentJob() });
+    }, 2500);
+  }, true);
 
   // ---------- recommend page ----------
   // “a colleague already talked to this person”: a field on the candidate object whose name
@@ -108,8 +140,10 @@
       el.setAttribute('data-hra-uid', c.resumeNumber);
       cards.push({ ...pick(c), peerChat: peerOf(c, el), gradText: gradOf(c, el) });
     }
-    const sig = cards.map(c => c.resumeNumber).join(',');
-    if (sig && sig !== lastSig) { lastSig = sig; post('recommend', { cards, job: currentJob() }); }
+    // the job is part of the signature: switching the job tab re-screens the same cards with that role
+    const job = currentJob();
+    const sig = job + '|' + cards.map(c => c.resumeNumber).join(',');
+    if (cards.length && sig !== lastSig) { lastSig = sig; post('recommend', { cards, job }); }
   }
 
   // ---------- chat page ----------
@@ -687,7 +721,8 @@
         }
         // graduation fields of the first cards (short values only), to check the 毕业年份 rule
         const gradSample = els.slice(0, 8).map(el => { const c = cardVm(el)?.$props?.candidate || {}; return { desc: String(c.userGraduateDescription ?? '').slice(0, 20), school: c.isSchoolResume, graduates: typeof c.graduates === 'object' ? shape(c.graduates) : String(c.graduates ?? '').slice(0, 20), read: gradOf(c, el) }; });
-        return { gradSample, candKeys: Object.keys(c0).slice(0, 120), peerKeys: Object.fromEntries(Object.entries(c0).filter(([k]) => PEER_KEY.test(k)).map(([k, v]) => [k, typeof v === 'object' ? shape(v) : String(v).slice(0, 20)])),
+        const jobs = (rootVm()?.$store?.state?.jobs?.jobList || []).map(j => j.jobTitle || j.jobName || j.title).slice(0, 12);
+        return { job: currentJob(), jobs, urlJob: new URLSearchParams(location.search).get('jobNumber') ? 'yes' : 'no', gradSample, candKeys: Object.keys(c0).slice(0, 120), peerKeys: Object.fromEntries(Object.entries(c0).filter(([k]) => PEER_KEY.test(k)).map(([k, v]) => [k, typeof v === 'object' ? shape(v) : String(v).slice(0, 20)])),
           labels: [...labels].slice(0, 30), peerFound: els.filter(el => peerOf(cardVm(el)?.$props?.candidate, el)).length, cards: els.length };
       })(),
     };

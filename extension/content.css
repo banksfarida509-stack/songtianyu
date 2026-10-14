@@ -53,3 +53,5 @@
 .hra-tag.ok{background:#E7F6EF;color:#0E8A5F} .hra-tag.warn{background:#FDF2E3;color:#B25E09} .hra-tag.no{background:#F1F2F4;color:#6B717B}
 .hra-src{font-size:10.5px;background:#FFF6DA;color:#9A6A00;border-radius:4px;padding:0 5px}
 .hra-v-ok{box-shadow:inset 3px 0 0 #0E8A5F} .hra-v-warn{box-shadow:inset 3px 0 0 #B25E09} .hra-v-no{opacity:.82}
+
+#hra-panel .hra-sel{font-size:12px;padding:1px 4px;border:1px solid #DADCE0;border-radius:4px;background:#fff;color:#1F2329}

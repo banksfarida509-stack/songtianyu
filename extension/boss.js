@@ -405,8 +405,10 @@
       card.setAttribute('data-hra-uid', c.resumeNumber);
       if (!cards.some(x => x.resumeNumber === c.resumeNumber)) cards.push(c);
     }
-    const sig = cards.map(c => c.resumeNumber).join(',');
-    if (sig && sig !== lastRecSig) { lastRecSig = sig; post('recommend', { cards, job: currentRecJob() }); }
+    // the job is part of the signature: switching jobs re-screens the cards with that role
+    const job = currentRecJob();
+    const sig = job + '|' + cards.map(c => c.resumeNumber).join(',');
+    if (cards.length && sig !== lastRecSig) { lastRecSig = sig; post('recommend', { cards, job }); }
   }
   async function greetRec(uid) {
     const card = document.querySelector(`[data-hra-uid="${CSS.escape(uid)}"]`);

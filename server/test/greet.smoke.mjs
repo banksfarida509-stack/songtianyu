@@ -39,6 +39,18 @@ q = await call('/ext/greet/quota', { body: { platform: 'boss', job: '学管师' 
 ok(q.used === 0 && q.left === 2, 'BOSS counted separately');
 q = await call('/ext/greet/quota', { body: { platform: 'zhaopin', job: '初中数学老师' }, token });
 ok(q.role === 'teacher' && q.cap === 100 && q.used === 0, '教师 counted separately');
+// role chosen in the panel / by the job tab; a hand-clicked greeting; the same person counted once
+q = await call('/ext/greet/quota', { body: { platform: 'zhaopin', job: '初高中文化课教师', role: 'zixun' }, token });
+ok(q.role === 'zixun' && q.cap === 50 && q.today.some(x => x[0] === 'teacher') && q.roles.length >= 3, 'quota with a chosen role lists all roles');
+g = await call('/ext/greeted', { body: { platform: 'zhaopin', uid: 'M1', name: '丙', job: '初高中文化课教师', role: 'zixun', manual: true }, token });
+ok(g.quota.role === 'zixun' && g.quota.used === 1, 'hand-clicked greeting counted under the chosen role');
+g = await call('/ext/greeted', { body: { platform: 'zhaopin', uid: 'M1', name: '丙', job: '初高中文化课教师', role: 'zixun', manual: true }, token });
+ok(g.quota.used === 1, 'same person twice today counts once');
+let scr = await call('/ext/screen', { body: { platform: 'zhaopin', job: '课程顾问', cards: [{ resumeNumber: 'R1', userName: '丁', age: '30', educationLevel: '大专', workYears: '5年', workExperiences: [{ companyName: '某教育科技', jobTitle: '课程顾问' }], educationExperiences: [{ schoolName: '辽宁职业学院', educationLevel: '大专', mode: '统招' }] }] }, token });
+ok(scr.role.key === 'zixun' && scr.results[0].verdict !== '不推荐', '课程顾问 job → 课程顾问 rules (大专 ok)');
+scr = await call('/ext/screen', { body: { platform: 'zhaopin', job: '课程顾问', role: 'teacher', cards: [{ resumeNumber: 'R1', userName: '丁', age: '30', educationLevel: '大专', workYears: '5年', workExperiences: [{ companyName: '某教育科技', jobTitle: '课程顾问' }], educationExperiences: [{ schoolName: '辽宁职业学院', educationLevel: '大专', mode: '统招' }] }] }, token });
+ok(scr.role.key === 'teacher' && scr.results[0].verdict === '不推荐', 'chosen 教师 rules override the job title');
+
 const stats = await call('/stats');
 ok(stats.greetToday.zhaopin.xueguan === 2 && stats.imAlive.zhaopin === true && stats.greet.daily.xueguan === 2, 'dashboard shows counts and page status');
 

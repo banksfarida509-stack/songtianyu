@@ -119,8 +119,9 @@ const notesHash = notes => [...String(notes || '')].reduce((h, ch) => (h * 31 + 
 const roleByKey = key => { const roles = getSetting(db, 'roles'); const k = roles[key] ? key : 'teacher'; return { key: k, ...roles[k] }; };
 // a role set by hand on the candidate wins over the job title
 const roleForCand = (c, job) => (c && c.role_manual ? roleByKey(c.role) : roleOf(job || (c && c.job)));
-function screenFor(n, job, ex) {
-  const role = roleForCand(ex, job);
+function screenFor(n, job, ex, roleKey) {
+  // a role chosen on the recommend page wins; else one set by hand on the candidate; else the job title
+  const role = roleKey && ROLE_KEYS.includes(roleKey) ? roleByKey(roleKey) : roleForCand(ex, job);
   const rules = getSetting(db, 'rules');
   // graduation year is a hard rule for every role (in-school students are not recruited)
   const sc = applyGradRule({ ...(role.key === 'teacher' ? screen(n, rules) : screenRole(n, role)), roleKey: role.key }, n, rules.maxGradYear);
@@ -182,8 +183,9 @@ function upsertScreenedRow(platform, job, n, sc, source) {
   if (ex) {
     db.prepare(`UPDATE candidates SET name=?,gender=?,age=?,edu=?,school=?,school_tag=?,major=?,years=?,career_status=?,expect=?,job=COALESCE(?,job),
       work_json=?,edu_json=?,skills_json=?,certs_json=?,self_eval=?,verdict=?,score=?,rules_json=?,
-      reason=CASE WHEN reason_by='ai' AND verdict=? THEN reason ELSE ? END, reason_by=CASE WHEN reason_by='ai' AND verdict=? THEN reason_by ELSE 'rule' END,
-      updated_at=? WHERE id=?`).run(...vals, sc.verdict, sc.reason, sc.verdict, now, ex.id);
+      reason=CASE WHEN reason_by='ai' AND verdict=? AND COALESCE(role,'teacher')=? THEN reason ELSE ? END,
+      reason_by=CASE WHEN reason_by='ai' AND verdict=? AND COALESCE(role,'teacher')=? THEN reason_by ELSE 'rule' END,
+      updated_at=? WHERE id=?`).run(...vals, sc.verdict, sc.roleKey || 'teacher', sc.reason, sc.verdict, sc.roleKey || 'teacher', now, ex.id); // an AI reason written for another role is dropped
     if (sc.keepAi) db.prepare("UPDATE candidates SET reason=?, reason_by='ai' WHERE id=?").run(sc.reason, ex.id);
     return getCand(ex.id);
   }
@@ -239,9 +241,9 @@ route('POST', '/api/ext/diag', 'ext', async (req, res) => {
 });
 // ---------- proactive follow-ups ----------
 // daily greeting cap per platform and role (role from the recommend page's job title)
-function greetQuota(platform, job) {
+function greetQuota(platform, job, roleKey) {
   const roles = getSetting(db, 'roles');
-  const role = roleFor(job, roles);
+  const role = ROLE_KEYS.includes(roleKey) ? roleKey : roleFor(job, roles);
   const cap = Math.max(0, Number((getSetting(db, 'greet').daily || {})[role] ?? 0));
   const used = db.prepare('SELECT COUNT(*) n FROM greet_log WHERE day=? AND platform=? AND role=?').get(todayCN(), platform, role).n;
   return { role, roleName: (roles[role] || {}).name || role, cap, used, left: Math.max(0, cap - used), continuous: getSetting(db, 'greet').continuous !== false };
@@ -252,21 +254,34 @@ function greetToday() {
   for (const r of db.prepare('SELECT platform, role, COUNT(*) n FROM greet_log WHERE day=? GROUP BY platform, role').all(todayCN())) (out[r.platform] ||= {})[r.role] = r.n;
   return out;
 }
+// quota plus the panel's role list and today's count for every role on this platform
+function greetPanel(platform, job, roleKey) {
+  const q = greetQuota(platform, job, roleKey);
+  const roles = getSetting(db, 'roles'), daily = getSetting(db, 'greet').daily || {}, today = greetToday()[platform] || {};
+  const keys = ROLE_KEYS.filter(k => k !== 'other' && roles[k] && roles[k].enabled !== false);
+  return { ...q, roles: keys.map(k => [k, roles[k].name]), today: keys.map(k => [k, roles[k].name, today[k] || 0, Number(daily[k] ?? 0)]) };
+}
 route('POST', '/api/ext/greet/quota', 'ext', async (req, res) => {
   const b = await body(req);
-  send(res, 200, greetQuota(b.platform === 'boss' ? 'boss' : 'zhaopin', clip(b.job, 40)));
+  send(res, 200, greetPanel(b.platform === 'boss' ? 'boss' : 'zhaopin', clip(b.job, 40), b.role));
 });
-// a greeting was sent from the recommend page (counts toward the daily cap; starts the “no reply in N hours” clock)
+// a greeting was sent from the recommend page — by the extension, or clicked by hand (manual) —
+// counts toward the daily cap of the role, and starts the “no reply in N hours” clock
 route('POST', '/api/ext/greeted', 'ext', async (req, res) => {
   const b = await body(req);
   const platform = b.platform === 'boss' ? 'boss' : 'zhaopin';
   const job = clip(b.job, 40);
-  db.prepare('INSERT INTO greet_log(day,platform,role,uid,at) VALUES(?,?,?,?,?)').run(todayCN(), platform, roleFor(job, getSetting(db, 'roles')), b.uid ? String(b.uid) : null, nowCN());
-  const quota = greetQuota(platform, job);
+  const roleKey = ROLE_KEYS.includes(b.role) ? b.role : roleFor(job, getSetting(db, 'roles'));
+  const uid = b.uid ? String(b.uid) : null;
+  // the same person greeted twice today (a retry, or a click seen twice) counts once
+  if (!uid || !db.prepare('SELECT 1 FROM greet_log WHERE day=? AND platform=? AND uid=?').get(todayCN(), platform, uid)) {
+    db.prepare('INSERT INTO greet_log(day,platform,role,uid,at) VALUES(?,?,?,?,?)').run(todayCN(), platform, roleKey, uid, nowCN());
+  }
+  const quota = greetPanel(platform, job, roleKey);
   const c = b.uid ? db.prepare('SELECT * FROM candidates WHERE platform=? AND uid=?').get(platform, String(b.uid)) : null;
   if (!c) return send(res, 200, { ok: false, quota });
   db.prepare('UPDATE candidates SET greeted_ms=COALESCE(greeted_ms, ?), job=COALESCE(job, ?), attend=CASE WHEN attend=\'未联系\' THEN \'沟通中\' ELSE attend END WHERE id=?').run(Date.now(), job || null, c.id);
-  addEvent(db, c.id, '已打招呼');
+  addEvent(db, c.id, b.manual ? '已打招呼（你在页面上手动点的）' : '已打招呼');
   send(res, 200, { ok: true, quota });
 });
 const followCfg = () => (getSetting(db, 'autoReply').followup || {});
@@ -377,13 +392,14 @@ route('POST', '/api/ext/chat/mode', 'ext', async (req, res) => {
 route('POST', '/api/ext/screen', 'ext', async (req, res) => {
   const b = await body(req);
   const platform = b.platform === 'boss' ? 'boss' : 'zhaopin';
-  const role = roleOf(b.job);
+  // the role: chosen in the panel, else from the job tab's title (not a role set earlier on the candidate)
+  const role = ROLE_KEYS.includes(b.role) ? roleByKey(b.role) : roleOf(b.job);
   const out = [];
   for (const raw of (b.cards || []).slice(0, 60)) {
     const n = normalizeZhaopin(raw);
     if (!n.uid) continue;
     const ex = db.prepare('SELECT * FROM candidates WHERE platform=? AND uid=?').get(platform, n.uid);
-    const sc = screenFor(n, b.job, ex);
+    const sc = screenFor(n, b.job, ex, role.key);
     const c = upsertScreened(platform, clip(b.job, 40) || null, n, sc, platform === 'zhaopin' ? '智联 推荐列表' : 'BOSS');
     if (n.phone) savePhone(c, n.phone, '简历');
     // someone on the team already talked to this person: the platform says so on the card, or our

@@ -138,7 +138,11 @@
     let b = '';
     if (S.imAlive === false) b += `<div class="hra-err">自动回复没有运行：${SITE}「消息」页没有打开，候选人的消息不会被回复。<button class="hra-btn sm" data-a="open-im">打开消息页</button></div>`;
     b += `<div class="hra-stats"><div><b>${all.length}</b>已初筛</div><div><b>${n('推荐')}</b>推荐</div><div><b>${n('待确认')}</b>待确认</div><div><b>${n('不推荐')}</b>不推荐</div></div>`;
-    b += `<div class="hra-sub">推荐顺序（${esc(S.job || '当前岗位')}${S.roleName ? ` · 按${esc(S.roleName)}岗规则初筛` : ''}）</div><div class="hra-rank">${rk.length ? rk.slice(0, 12).map(r => `<div class="hra-ri" data-uid="${esc(r.uid)}"><b>${r.score}</b><span>${esc(r.name || '')}<i>${esc(r.reason || '')}</i></span><em>${r.greeted ? '已打招呼' : r.peer ? '同事聊过' : ''}</em></div>`).join('') : '<p class="hra-muted">暂无推荐的人。滚动页面加载更多，插件会自动读取。</p>'}</div>`;
+    // which role's rules screen this job's cards: detected from the job title, or chosen here (remembered per job)
+    const RO = (S.quota && S.quota.roles) || [['teacher', '教师'], ['xueguan', '学管师'], ['zixun', '课程顾问']];
+    b += `<div class="hra-row hra-muted">职位：<b>${esc(S.job || '未识别')}</b>　按 <select id="hra-role" class="hra-sel">${[['', `自动${S.roleName && !S.roleSel ? `（${esc(S.roleName)}）` : ''}`], ...RO].map(([k, t]) => `<option value="${k}" ${(S.roleSel || '') === k ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select> 岗规则初筛</div>`;
+    if (S.quota && S.quota.today) b += `<div class="hra-muted">今日${SITE}已打招呼：${S.quota.today.map(([k, t, used, cap]) => `${esc(t)} <b>${used}</b>/${cap}`).join(' · ')}</div>`;
+    b += `<div class="hra-sub">推荐顺序</div><div class="hra-rank">${rk.length ? rk.slice(0, 12).map(r => `<div class="hra-ri" data-uid="${esc(r.uid)}"><b>${r.score}</b><span>${esc(r.name || '')}<i>${esc(r.reason || '')}</i></span><em>${r.greeted ? '已打招呼' : r.peer ? '同事聊过' : ''}</em></div>`).join('') : '<p class="hra-muted">暂无推荐的人。滚动页面加载更多，插件会自动读取。</p>'}</div>`;
     const q = S.quota;
     const qTxt = q ? `今日${esc(q.roleName)}岗已打 ${q.used} / ${q.cap}` : '';
     b += S.greeting
@@ -208,6 +212,8 @@
     panel.querySelectorAll('[data-a]').forEach(b => b.onclick = e => { e.preventDefault(); act(b.dataset.a); });
     const nIn = panel.querySelector('#hra-n');
     if (nIn) nIn.oninput = () => { S.target = parseInt(nIn.value, 10) || S.target; };
+    const rSel = panel.querySelector('#hra-role');
+    if (rSel) rSel.onchange = () => setRoleSel(rSel.value);
     const cIn = panel.querySelector('#hra-cont');
     if (cIn) cIn.onchange = () => { S.cont = cIn.checked; S.contTouched = true; draw(); };
     panel.querySelectorAll('.hra-ri[data-uid]').forEach(el => el.onclick = () => {
@@ -274,11 +280,34 @@
   }
 
   // ---------- recommend: screen + AI reasons + inline lines ----------
+  // the role chosen in the panel for a job title ('' = detect from the title), remembered per job
+  const roleKey = job => `roleSel_${PLATFORM}_${job || ''}`;
+  async function loadRoleSel(job) {
+    try { S.roleSel = (await chrome.storage.local.get(roleKey(job)))[roleKey(job)] || ''; } catch { S.roleSel = ''; }
+  }
+  function rescreenAll() {
+    if (S.greeting) { S.stop = true; log('岗位变了，已停止打招呼'); }
+    S.results = {}; S.roleName = ''; S.quota = null; S.quotaJob = null;
+    document.querySelectorAll('.hra-line').forEach(x => x.remove());
+    toMain('reread'); // the page script sends the cards again → screened with the new role
+  }
+  async function setRoleSel(v) {
+    S.roleSel = v || '';
+    try { v ? chrome.storage.local.set({ [roleKey(S.job)]: v }) : chrome.storage.local.remove(roleKey(S.job)); } catch { /* this page only */ }
+    log(v ? `「${S.job || '当前职位'}」改为按${(S.quota?.roles || []).find(x => x[0] === v)?.[1] || v}岗规则初筛` : `「${S.job || '当前职位'}」改为按职位名自动识别岗位`);
+    rescreenAll();
+  }
   async function onCards(cards, job) {
-    S.job = job || S.job;
+    // another job tab: everything on the page is screened again with that job's role
+    if (job && job !== S.job) {
+      const had = !!S.job;
+      S.job = job;
+      await loadRoleSel(job);
+      if (had) { log(`切换到职位「${job}」，按这个岗位重新初筛`); rescreenAll(); return; }
+    }
     const fresh = cards.filter(c => !S.results[c.resumeNumber]);
     if (!fresh.length) return paintLines();
-    const r = await api('/ext/screen', { platform: PLATFORM, job: S.job, cards: fresh });
+    const r = await api('/ext/screen', { platform: PLATFORM, job: S.job, role: S.roleSel || undefined, cards: fresh });
     if (r.error) { S.err = r.error; return draw(); }
     S.err = '';
     if (r.data.role) S.roleName = r.data.role.name;
@@ -316,7 +345,7 @@
   }
   // today's greeting count and cap for this platform and the job's role (from the server)
   async function loadQuota() {
-    const r = await api('/ext/greet/quota', { platform: PLATFORM, job: S.job });
+    const r = await api('/ext/greet/quota', { platform: PLATFORM, job: S.job, role: S.roleSel || undefined });
     if (r.data) {
       S.quota = r.data;
       if (!S.contTouched) S.cont = r.data.continuous;
@@ -388,7 +417,7 @@
         S.results[r.uid].greeted = true;
         if (!/已沟通过/.test(res.msg)) {
           S.done++; fails = 0;
-          const g = await api('/ext/greeted', { platform: PLATFORM, uid: r.uid, name: r.name, job: S.job });
+          const g = await api('/ext/greeted', { platform: PLATFORM, uid: r.uid, name: r.name, job: S.job, role: S.roleSel || S.quota?.role || undefined });
           if (g.data?.quota) S.quota = g.data.quota;
         }
         paintLines(); draw();
@@ -629,6 +658,14 @@
     const d = e.data;
     if (!d || d.__hra !== 'main' || e.source !== window) return;
     if (d.type === 'recommend') onCards(d.data.cards, d.data.job);
+    // a greeting clicked by hand on the page: counted for today like ours
+    if (d.type === 'manualGreet') {
+      const r = S.results[d.data.uid];
+      if (r) { r.greeted = true; paintLines(); }
+      api('/ext/greeted', { platform: PLATFORM, uid: d.data.uid, name: r?.name || '', job: d.data.job || S.job, role: S.roleSel || S.quota?.role || undefined, manual: true })
+        .then(g => { if (g.data?.quota) { S.quota = g.data.quota; draw(); } });
+      log(`${r?.name || '一位候选人'}：你手动打了招呼，已计入今日数量`);
+    }
     if (d.type === 'inviteShape') { S.inviteShape = d.data; api('/ext/diag', { kind: 'invite', data: d.data }); log('已记录你发面试邀约的窗口结构，用于完善自动邀约'); }
     if (d.type === 'historyProgress' && S.collecting) { Object.assign(S.collecting, { done: d.data.done, total: d.data.total, name: d.data.name }); draw(); }
     if (d.type === 'chat' && S.collecting) return;
