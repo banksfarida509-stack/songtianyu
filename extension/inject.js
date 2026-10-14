@@ -653,6 +653,8 @@
       url: location.pathname, session: shape(sess), messageTypes: [...new Set(tl.map(m => `${m.type}/${m.flow}`))],
       firstMessage: tl[0] ? { type: tl[0].type, flow: tl[0].flow, keys: Object.keys(tl[0]).slice(0, 30) } : null,
       resumeFound: !!resumeFor(sess || {}), openHow,
+      // field names / types only (no values) of the open conversation's resume, to map 学历 etc.
+      activeResume: shape(st && st.activeResume), activeResumePicked: (() => { const p = st && activeResumeOf(st, sess || {}); return p ? { edu: !!p.educationLevel, edus: (p.educationExperiences || []).map(e => ({ deg: !!e.educationLevel, begin: !!e.beginDate, end: !!e.endDate, mode: !!e.mode })), age: p.age != null, work: (p.workExperiences || []).length } : null; })(),
       imKeys: Object.keys(st || {}).slice(0, 60), sessionsFound: sessionsOf(st).length,
       unreadInStore: sessionsOf(st).filter(s => unreadOf(s) > 0).map(nameOf).slice(0, 10), badgeRows: badgeRows().map(r => r.name).slice(0, 10),
       sessionActions: Object.keys(rootVm()?.$store?._actions || {}).filter(a => /session/i.test(a)).slice(0, 40),
