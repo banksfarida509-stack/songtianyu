@@ -218,9 +218,17 @@ const imAlive = () => {
   const pg = extPages(), now = Date.now();
   return Object.fromEntries(['zhaopin', 'boss'].map(p => [p, !!pg[`${p}:im`] && now - pg[`${p}:im`].ms < PAGE_ALIVE_MS]));
 };
+// every page / frame running the extension in the last 3 minutes (finds piled-up tabs)
+const livePages = new Map();
+const liveList = () => {
+  const now = Date.now();
+  for (const [k, v] of livePages) if (now - v.ms > 180e3) livePages.delete(k);
+  return [...livePages.values()].map(v => ({ platform: v.platform, kind: v.kind, page: v.page, frame: v.frame, version: v.version, ago: Math.round((now - v.ms) / 1000) }));
+};
 route('POST', '/api/ext/ping', 'ext', async (req, res) => {
   const b = await body(req);
   setSetting(db, 'ext_last', { at: nowCN(), page: clip(b.page, 60), version: clip(b.version, 20) });
+  if (b.id) livePages.set(clip(b.id, 60), { platform: clip(b.platform, 10), kind: clip(b.kind, 10), page: clip(b.page, 60), frame: !!b.frame, version: clip(b.version, 20), ms: Date.now() });
   const platform = b.platform === 'boss' ? 'boss' : b.platform === 'zhaopin' ? 'zhaopin' : '';
   if (platform && ['im', 'rec'].includes(b.kind)) setSetting(db, 'ext_pages', { ...extPages(), [`${platform}:${b.kind}`]: { at: nowCN(), ms: Date.now(), version: clip(b.version, 20) } });
   const ar = getSetting(db, 'autoReply');
@@ -232,10 +240,10 @@ route('POST', '/api/ext/ping', 'ext', async (req, res) => {
 route('POST', '/api/ext/diag', 'ext', async (req, res) => {
   const b = await body(req);
   // chat / invite: 智联; boss / bossRec: BOSS直聘 chat / recommend; stall: self-check report when replies stop
-  const kind = ['chat', 'invite', 'boss', 'bossRec', 'rec', 'stall', 'greet', 'resume'].includes(b.kind) ? b.kind : 'chat';
+  const kind = ['chat', 'invite', 'boss', 'bossRec', 'rec', 'stall', 'greet', 'resume', 'logout'].includes(b.kind) ? b.kind : 'chat';
   const str = JSON.stringify(b.data ?? null);
   const entry = { at: nowCN(), data: str.length > 20000 ? { truncated: true, head: str.slice(0, 20000) } : b.data };
-  if (kind === 'stall' || kind === 'greet') { const prev = getSetting(db, `diag_${kind}`); setSetting(db, `diag_${kind}`, { ...entry, list: [entry, ...((prev && prev.list) || [])].slice(0, 10) }); }
+  if (kind === 'stall' || kind === 'greet' || kind === 'logout') { const prev = getSetting(db, `diag_${kind}`); setSetting(db, `diag_${kind}`, { ...entry, list: [entry, ...((prev && prev.list) || [])].slice(0, 10) }); }
   else setSetting(db, `diag_${kind}`, entry);
   send(res, 200, { ok: true });
 });
@@ -848,7 +856,7 @@ route('POST', '/api/kb/learn', 'admin', async (req, res) => {
   }
   send(res, 200, r);
 });
-route('GET', '/api/diag', 'admin', (req, res) => send(res, 200, Object.fromEntries(['chat', 'invite', 'boss', 'bossRec', 'rec', 'stall', 'greet', 'resume'].map(k => [k, getSetting(db, `diag_${k}`)]))));
+route('GET', '/api/diag', 'admin', (req, res) => send(res, 200, { ...Object.fromEntries(['chat', 'invite', 'boss', 'bossRec', 'rec', 'stall', 'greet', 'resume', 'logout'].map(k => [k, getSetting(db, `diag_${k}`)])), live: liveList() }));
 
 route('POST', '/api/settings/rotate-token', 'admin', (req, res) => { const t = randomToken(18); setSetting(db, 'ext_token', t); send(res, 200, { extToken: t }); });
 route('POST', '/api/settings/rescreen', 'admin', async (req, res) => {

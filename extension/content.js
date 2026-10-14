@@ -37,7 +37,17 @@
   // pause between two greetings (seconds); the choice is remembered
   const GAPS = [[3, 5], [5, 7], [7, 10], [10, 15]];
   try { chrome.storage.local.get('greetGap').then(v => { if (Number.isInteger(v.greetGap)) S.gap = v.greetGap; }); } catch { /* default 10–15 s */ }
-  const log = m => { S.log.unshift(`${new Date().toTimeString().slice(0, 8)} ${m}`); S.log = S.log.slice(0, 40); draw(); };
+  // BOSS logs the account out when it judges the activity machine-like, so on BOSS greetings
+  // go slower with breaks, whatever pause is chosen (the chosen pause applies to 智联)
+  const BOSS_GAP = [30, 60], BOSS_REST_EVERY = 8, BOSS_HOURLY = 40;
+  let bossGreets = []; // times of BOSS greetings, for the hourly limit (kept across page refreshes)
+  try { chrome.storage.local.get('bossGreets').then(v => { bossGreets = [...(v.bossGreets || []), ...bossGreets]; }); } catch { /* page only */ }
+  const log = m => {
+    const line = `${new Date().toTimeString().slice(0, 8)} ${m}`;
+    S.log.unshift(line); S.log = S.log.slice(0, 40); draw();
+    // what the extension did on BOSS lately, sent along when the account gets logged out
+    if (/zhipin\.com$/.test(location.hostname)) try { chrome.storage.local.get('bossAct').then(v => chrome.storage.local.set({ bossAct: [`${location.pathname.slice(0, 24)} ${line}`, ...(v.bossAct || [])].slice(0, 40) })); } catch { /* not kept */ }
+  };
   const MODE_TXT = { auto: '全自动', semi: '半自动', human: '转人工' };
 
   // ---------- panel ----------
@@ -61,6 +71,26 @@
   const isRec = () => PLATFORM === 'zhaopin' ? location.pathname.includes('/app/recommend')
     : /recommend/.test(location.pathname) && (IN_FRAME || !document.querySelector('iframe[src*="recommend"], iframe[name*="recommend"]'));
   const isIm = () => PLATFORM === 'boss' ? !IN_FRAME && /chat/.test(location.pathname) && !/recommend/.test(location.pathname) : location.pathname.includes('/app/im');
+
+  // BOSS sends a logged-out account to its login page (/web/user/). Report when that happened,
+  // with what the extension did just before, and keep automatic actions (greeting, opening
+  // conversations) quiet for a while after logging back in.
+  const BOSS_CALM = 5 * 60e3;
+  let bossOutAt = 0;
+  if (PLATFORM === 'boss') {
+    try { chrome.storage.local.get('bossOutAt').then(v => { bossOutAt = Math.max(bossOutAt, +v.bossOutAt || 0); }); } catch { /* none */ }
+    if (!IN_FRAME && /^\/web\/user/.test(location.pathname)) {
+      bossOutAt = Date.now();
+      try {
+        chrome.storage.local.get(['bossAct', 'bossOutAt']).then(v => {
+          // one report per logout (the login page may be reloaded)
+          if (Date.now() - (+v.bossOutAt || 0) > 120e3) api('/ext/diag', { kind: 'logout', data: { version: VERSION, page: location.pathname, from: document.referrer.replace(/\?.*/, '').slice(0, 80), recent: v.bossAct || [] } });
+          chrome.storage.local.set({ bossOutAt, bossAct: [] });
+        });
+      } catch { /* not reported */ }
+    }
+  }
+  const bossCalm = () => PLATFORM === 'boss' ? Math.max(0, bossOutAt + BOSS_CALM - Date.now()) : 0;
 
   // ---------- panel position: drag the red title bar; double-click it to reset; remembered per site ----------
   const POS_KEY = `hraPanel_${PLATFORM}_${IN_FRAME ? 'frame' : 'top'}`;
@@ -151,8 +181,9 @@
         ? `<p class="hra-muted">按 AI 推荐顺序打招呼，当前页推荐 ${rk.filter(r => !r.greeted).length} 位未打招呼${rk.some(r => !r.greeted && r.peer) ? `（其中 ${rk.filter(r => !r.greeted && r.peer).length} 位同事聊过）` : ''}；先打同事没聊过的，不够时自动往下加载更多，实在没有了再打同事聊过的。会消耗平台打招呼次数。${qTxt ? `<br><b>${qTxt}</b>（上限在后台“设置 → 推荐页打招呼”修改）` : ''}</p>
            <div class="hra-row"><label class="hra-muted"><input type="checkbox" id="hra-cont" ${S.cont ? 'checked' : ''}> 持续打到今日上限（页面刷新后自动继续）</label></div>
            ${S.cont ? '' : `<div class="hra-row"><label class="hra-muted">本次打 <input id="hra-n" type="number" min="1" max="100" value="${S.target || 10}" style="width:56px"> 位</label></div>`}
-           <div class="hra-muted">每位间隔</div><div class="hra-seg">${GAPS.map(([lo, hi], i) => `<button data-a="gap:${i}" class="${S.gap === i ? 'on' : ''}">${lo}–${hi} 秒</button>`).join('')}</div>
-           ${S.gap === 0 ? '<p class="hra-muted" style="color:#B25E09">间隔越短，越容易触发平台“操作频繁”验证；出现验证会自动停止。</p>' : ''}
+           ${PLATFORM === 'boss' ? `<p class="hra-muted">BOSS 防掉线节奏：每位间隔 ${BOSS_GAP[0]}–${BOSS_GAP[1]} 秒，每打 ${BOSS_REST_EVERY} 位休息 3–5 分钟，每小时最多 ${BOSS_HOURLY} 位。</p>`
+             : `<div class="hra-muted">每位间隔</div><div class="hra-seg">${GAPS.map(([lo, hi], i) => `<button data-a="gap:${i}" class="${S.gap === i ? 'on' : ''}">${lo}–${hi} 秒</button>`).join('')}</div>
+           ${S.gap === 0 ? '<p class="hra-muted" style="color:#B25E09">间隔越短，越容易触发平台“操作频繁”验证；出现验证会自动停止。</p>' : ''}`}
            <div class="hra-row"><button class="hra-btn pri" data-a="greet-go">确认开始</button><button class="hra-btn" data-a="greet-cancel">取消</button></div>`
         : `<button class="hra-btn pri" data-a="greet" ${rk.some(r => !r.greeted) && !S.risk ? '' : 'disabled'}>按推荐顺序打招呼</button>`;
     return b;
@@ -359,7 +390,7 @@
   const setGreetRun = v => { try { v ? chrome.storage.local.set({ [RUN_KEY]: { ...v, day: today() } }) : chrome.storage.local.remove(RUN_KEY); } catch { /* not remembered */ } };
   let resumeChecked = false;
   async function maybeResumeGreet() {
-    if (resumeChecked || S.greeting || S.dead || !isRec() || !rank().length) return;
+    if (resumeChecked || S.greeting || S.dead || !isRec() || !rank().length || bossCalm()) return;
     resumeChecked = true;
     let run = null;
     try { run = (await chrome.storage.local.get(RUN_KEY))[RUN_KEY]; } catch { return; }
@@ -384,8 +415,14 @@
     let dry = 0, why = '', fails = 0, away = 0, peerOk = false;
     const onPage = uid => !!document.querySelector(`[data-hra-uid="${CSS.escape(uid)}"]`);
     const goal = () => S.cont ? Infinity : S.target;
+    const pause = async (ms, phase) => { S.phase = phase; draw(); for (let t = 0; t < ms && !S.stop && !S.risk; t += 500) await sleep(500); };
     while (S.done < goal() && !S.stop && !S.risk && !S.dead) {
       if (S.quota && S.quota.left <= 0) { why = `今日${S.quota.roleName}岗打招呼已达上限 ${S.quota.cap} 位`; break; }
+      if (bossCalm()) { await pause(5000, `BOSS 刚重新登录，${Math.ceil(bossCalm() / 60000)} 分钟后开始`); continue; }
+      if (PLATFORM === 'boss') {
+        const hour = bossGreets.filter(t => Date.now() - t < 3600e3);
+        if (hour.length >= BOSS_HOURLY) { await pause(Math.min(60e3, hour[0] + 3600e3 - Date.now()), `这一小时已打 ${hour.length} 位，等到 ${new Date(hour[0] + 3600e3).toTimeString().slice(0, 5)} 再继续`); continue; }
+      }
       // a greeting sometimes takes 智联 to another page: go back to the recommend list and continue
       if (!isRec()) {
         if (PLATFORM !== 'zhaopin' || ++away > 3) { why = '页面离开了推荐列表'; break; }
@@ -405,7 +442,7 @@
         }
         S.phase = '加载更多候选人…'; draw();
         toMain('more');
-        for (let t = 0; t < 6000 && !S.stop; t += 500) await sleep(500);
+        await pause(PLATFORM === 'boss' ? 10000 + Math.random() * 10000 : 6000, '加载更多候选人…');
         continue;
       }
       dry = 0; S.phase = `正在给 ${r.name} 打招呼`; draw();
@@ -417,6 +454,7 @@
         S.results[r.uid].greeted = true;
         if (!/已沟通过/.test(res.msg)) {
           S.done++; fails = 0;
+          if (PLATFORM === 'boss') { bossGreets.push(Date.now()); try { chrome.storage.local.set({ bossGreets: bossGreets.slice(-60) }); } catch { /* page only */ } }
           const g = await api('/ext/greeted', { platform: PLATFORM, uid: r.uid, name: r.name, job: S.job, role: S.roleSel || S.quota?.role || undefined });
           if (g.data?.quota) S.quota = g.data.quota;
         }
@@ -428,10 +466,14 @@
       if (S.done >= goal() || (S.quota && S.quota.left <= 0)) continue; // the loop head ends the run with the reason
       // nothing was sent (already contacted / card gone): move on without the pause
       if (/已沟通过/.test(res.msg) || (!res.ok && !res.unverified)) continue;
-      const [lo, hi] = GAPS[S.gap] || GAPS[3];
+      if (PLATFORM === 'boss' && S.done % BOSS_REST_EVERY === 0) {
+        const rest = (180 + Math.random() * 120) * 1000;
+        await pause(rest, `已连续打 ${BOSS_REST_EVERY} 位，休息 ${Math.round(rest / 60000)} 分钟（防 BOSS 掉线）`);
+        continue;
+      }
+      const [lo, hi] = PLATFORM === 'boss' ? BOSS_GAP : GAPS[S.gap] || GAPS[3];
       const wait = (lo + Math.random() * (hi - lo)) * 1000;
-      S.phase = `等待 ${Math.round(wait / 1000)} 秒后继续`; draw();
-      for (let t = 0; t < wait && !S.stop && !S.risk; t += 500) await sleep(500);
+      await pause(wait, `等待 ${Math.round(wait / 1000)} 秒后继续`);
     }
     S.greeting = false; S.phase = '';
     const end = S.risk ? '因平台风控提示停止' : why ? `停止：${why}（本次成功 ${S.done} 位）` : S.stop ? `已手动停止（本次成功 ${S.done} 位）` : `完成：本次成功打招呼 ${S.done} 位`;
@@ -619,6 +661,7 @@
     if (A.scanUnread === false) return note('后台设置里关闭了“自动打开有未读消息的会话”');
     if (S.autoPaused) return note('已暂停');
     if (S.risk) return note('平台风控提示，已停止');
+    if (bossCalm()) return note(`BOSS 刚重新登录，${Math.ceil(bossCalm() / 60000)} 分钟后再自动处理消息`);
     if (S.collecting) return note('正在采集历史约聊');
     if (S.busy) return note('AI 正在写回复…');
     if (S.pending) return note('等待自动发送当前回复');
@@ -754,7 +797,7 @@
   }, 20000);
 
   const pageKind = () => isIm() ? 'im' : isRec() ? 'rec' : '';
-  const ping = () => api('/ext/ping', { page: location.pathname, version: VERSION, platform: PLATFORM, kind: pageKind() }).then(r => {
+  const ping = () => api('/ext/ping', { id: INSTANCE, frame: IN_FRAME, page: location.pathname, version: VERSION, platform: PLATFORM, kind: pageKind() }).then(r => {
     if (r.data?.extVersion) checkVersion(r.data.extVersion);
     S.err = r.error || (S.err.startsWith('连不上') || S.err.startsWith('插件') ? '' : S.err);
     if (r.data?.auto) { const was = S.auto?.enabled; S.auto = r.data.auto; if (was === false && S.auto.enabled) log('后台已开启全自动回复'); }
@@ -766,5 +809,6 @@
   // the background wakes the 消息 page every minute (its own timers are throttled while the tab is in the background)
   chrome.runtime.onMessage.addListener(m => { if (m?.type === 'wake' && isIm() && !S.dead) { toMain('tick'); patrol(); if (Date.now() - (S.pingAt || 0) > 50000) { S.pingAt = Date.now(); ping(); } } });
   ping(); setInterval(ping, 60000);
+  setInterval(() => { if (!S.dead) maybeResumeGreet(); }, 60000); // e.g. once the quiet time after a BOSS re-login is over
   draw();
 })();

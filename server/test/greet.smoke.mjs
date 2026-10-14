@@ -75,6 +75,10 @@ cl = await call('/ext/chat/claim', { body: { candidateId: by.P1.id, sig: 's1:m10
 ok(cl.ok === true, 'a new candidate message can be answered again');
 
 await call('/ext/diag', { body: { kind: 'greet', data: { end: '停止：测试' } }, token });
+await call('/ext/diag', { body: { kind: 'logout', data: { page: '/web/user/', recent: ['x'] } }, token });
+await call('/ext/ping', { body: { id: 'tab1', frame: false, page: '/web/chat/index', version: '0.9.12', platform: 'boss', kind: 'im' }, token });
 const d = await call('/diag');
 ok(d.greet && d.greet.list.length === 1, 'greet stop report stored');
+ok(d.logout && d.logout.list.length === 1 && d.logout.data.page === '/web/user/', 'BOSS logout report stored');
+ok(d.live.some(x => x.platform === 'boss' && x.kind === 'im' && x.ago < 5), 'live pages listed');
 console.log('all greet checks passed');
