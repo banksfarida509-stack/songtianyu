@@ -531,6 +531,22 @@ route('POST', '/api/ext/chat/suggest', 'ext', async (req, res) => {
     screen: { verdict: now.verdict, score: now.score, reason: now.reason, origin, hasResume: !!b.profile, role: role.name } });
 });
 
+// One automatic reply per candidate message: right before sending, the extension claims
+// (candidate, last message). Another tab, window or colleague's browser looking at the same
+// conversation gets “already claimed” and does not send. Kept 30 minutes in memory.
+const claims = new Map();
+route('POST', '/api/ext/chat/claim', 'ext', async (req, res) => {
+  const b = await body(req);
+  const id = Number(b.candidateId), sig = clip(b.sig, 200);
+  if (!id || !sig) return send(res, 200, { ok: true });
+  const now = Date.now();
+  for (const [k, v] of claims) if (now - v.at > 30 * 60000) claims.delete(k);
+  const k = `${id}|${sig}`;
+  const prev = claims.get(k);
+  if (prev && prev.by !== b.by) return send(res, 200, { ok: false, why: `另一个页面已在 ${Math.round((now - prev.at) / 1000)} 秒前回复了这条消息` });
+  claims.set(k, { at: now, by: clip(b.by, 60) });
+  send(res, 200, { ok: true });
+});
 // staff confirmed (sent) a draft in the platform → apply its state change
 route('POST', '/api/ext/chat/applied', 'ext', async (req, res) => {
   const b = await body(req);

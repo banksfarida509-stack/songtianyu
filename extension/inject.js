@@ -73,17 +73,23 @@
       const nm = typeof v === 'string' ? v.trim() : v && typeof v === 'object' ? Object.values(v).find(x => typeof x === 'string' && /[一-龥]/.test(x)) : '';
       return nm && nm.length <= 12 ? `同事${nm}聊过` : '同事聊过';
     }
-    // card text without our own AI line (it may show “同事聊过” itself)
-    const own = el && el.querySelector(':scope > .hra-line');
-    const m = ((el && el.innerText) || '').replace(own ? own.innerText : '', '').match(PEER_TXT);
+    const m = cardText(el).match(PEER_TXT);
     return m ? m[0].trim().slice(0, 30) : '';
   }
-  // graduation year / label: a field whose name says so, else “27届 / 2027年毕业” on the card
+  // a card's own text, without the AI line we add to it (which may say “同事聊过” itself)
+  function cardText(el) {
+    if (!el) return '';
+    const copy = el.cloneNode(true);
+    copy.querySelectorAll('.hra-line').forEach(x => x.remove());
+    return copy.textContent || '';
+  }
+  // graduation year / label: a field whose name says so (智联 userGraduateDescription), else
+  // “27届 / 2027年毕业” on the card, else 智联's in-school flag
   function gradOf(c, el) {
     for (const [k, v] of Object.entries(c || {})) if (/grad|graduat|biye/i.test(k) && (typeof v === 'string' || typeof v === 'number') && /\d{2}/.test(String(v))) return String(v).slice(0, 20);
-    const own = el && el.querySelector(':scope > .hra-line');
-    const m = ((el && el.innerText) || '').replace(own ? own.innerText : '', '').match(/(?<!\d)(?:20)?\d{2}\s*(?:届|年毕业|年应届)/);
-    return m ? m[0] : '';
+    const m = cardText(el).match(/(?<!\d)(?:20)?\d{2}\s*(?:届|年毕业|年应届)/);
+    if (m) return m[0];
+    return c && c.isSchoolResume === true ? '在校生' : '';
   }
   let lastSig = '';
   function readRecommend() {
@@ -407,6 +413,17 @@
     }
     return parts.sort().join('|');
   };
+  // when a conversation last moved (ms), from whichever time field the session has
+  const sessTime = s => {
+    for (const k of ['sortTime', 'communicateTime', 'lastActiveTime', 'updateTime', 'time']) {
+      const v = s && s[k];
+      if (v == null || v === '') continue;
+      let n = typeof v === 'number' ? v : /^\d+$/.test(String(v)) ? Number(v) : Date.parse(String(v).replace(' ', 'T'));
+      if (n && n < 1e12) n *= 1000; // seconds
+      if (n) return n;
+    }
+    return 0;
+  };
   const markVisited = (st, s) => { if (s) visited.set(String(sessId(s)), { sig: sessLastSig(s), unread: unreadOf(s), at: Date.now() }); };
   const seenAlready = s => {
     const v = visited.get(String(sessId(s)));
@@ -430,6 +447,13 @@
     const fresh = r => { const v = visited.get(`row:${r.name}`); return !v || Date.now() - v.at > 180000; };
     const row = badgeRows().find(r => r.name && r.name !== cur && !(skip || []).includes(`row:${r.name}`) && fresh(r));
     if (row) { visited.set(`row:${row.name}`, { at: Date.now() }); return openRow(row, reqId); }
+    // no unread left: look once (per page load, and again when something new arrives) at each
+    // conversation active in the last 3 days — one that was read but never answered gets a reply
+    const recent = sessionsOf(st).filter(s => usable(s) && !visited.has(String(sessId(s))) && Date.now() - sessTime(s) < 3 * 86400e3);
+    if (recent.length) {
+      const s = recent[0];
+      return openSession(sessId(s), reqId).then(() => {}); // openResult carries the message
+    }
     post('openResult', { reqId, ok: false, none: true, msg: '没有未读会话', sessions: sessionsOf(st).length,
       badges: badgeRows().filter(r => r.name !== cur).length, unread: sessionsOf(st).filter(s => unreadOf(s) > 0 && !isActive(st, s)).length });
   }
@@ -625,7 +649,9 @@
           const t = (e.children.length ? '' : (e.textContent || '').trim());
           if (t && t.length <= 16 && /同事|沟通|联系|聊|招呼|查看|看过|浏览/.test(t)) labels.add(t);
         }
-        return { candKeys: Object.keys(c0).slice(0, 120), peerKeys: Object.fromEntries(Object.entries(c0).filter(([k]) => PEER_KEY.test(k)).map(([k, v]) => [k, typeof v === 'object' ? shape(v) : String(v).slice(0, 20)])),
+        // graduation fields of the first cards (short values only), to check the 毕业年份 rule
+        const gradSample = els.slice(0, 8).map(el => { const c = cardVm(el)?.$props?.candidate || {}; return { desc: String(c.userGraduateDescription ?? '').slice(0, 20), school: c.isSchoolResume, graduates: typeof c.graduates === 'object' ? shape(c.graduates) : String(c.graduates ?? '').slice(0, 20), read: gradOf(c, el) }; });
+        return { gradSample, candKeys: Object.keys(c0).slice(0, 120), peerKeys: Object.fromEntries(Object.entries(c0).filter(([k]) => PEER_KEY.test(k)).map(([k, v]) => [k, typeof v === 'object' ? shape(v) : String(v).slice(0, 20)])),
           labels: [...labels].slice(0, 30), peerFound: els.filter(el => peerOf(cardVm(el)?.$props?.candidate, el)).length, cards: els.length };
       })(),
     };

@@ -14,6 +14,8 @@ test('毕业年份：结束时间、至今、届数标签', () => {
   assert.equal(gradYearOf(card({}, { gradText: '27届' })), 2027);
   assert.equal(gradYearOf(card({}, { gradText: '2029-06' })), 2029);
   assert.equal(gradYearOf(card({}, { workYearsLabel: '28届应届生' })), 2028);
+  assert.equal(gradYearOf(card({}, { gradText: '在校生' })), new Date().getFullYear() + 1);
+  assert.equal(gradYearOf(card({ beginDate: '2020.09', endDate: '2024.06' }, { gradText: '在校生' })), 2024); // 有结束时间时以结束时间为准
   // older rows without separate begin/end
   assert.equal(gradYearOf({ edus: [{ t: '2023.09-2027.06', deg: '本科' }] }), 2027);
   assert.equal(gradYearOf({ edus: [{ t: '2023.09', deg: '本科' }] }), null);

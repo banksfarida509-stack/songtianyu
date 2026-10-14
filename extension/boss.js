@@ -331,7 +331,9 @@
   const EDU_RE = /博士|硕士|研究生|本科|大专|专科|中专|中技|高中|初中/;
   function parseCard(card) {
     const d = vueData(card);
-    const text = textOf(card);
+    // the card's own text, without the AI line we add (its reason text would read as an experience line)
+    const ownLine = card.querySelector(':scope > .hra-line');
+    const text = (ownLine ? textOf(card).replace(textOf(ownLine), '') : textOf(card)).replace(/同事聊过 · 最后打|AI (推荐|待确认|不推荐)/g, '');
     const lines = text.split(/\n+/).map(s => s.trim()).filter(Boolean);
     const out = { userName: '', age: null, educationLevel: '', workYearsLabel: '', careerStatus: '', intentText: '', workExperiences: [], educationExperiences: [] };
     if (d) {
@@ -375,8 +377,7 @@
     if (!uid && d) uid = strIn(d, /^(encryptGeekId|geekId|securityId|uid|encryptUid|expectId|lid)$/i);
     if (!uid) uid = 'h' + [...`${out.userName}|${out.age}|${out.educationLevel}|${out.workExperiences[0]?.companyName || ''}|${out.educationExperiences[0]?.schoolName || ''}`].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7).toString(36);
     // a colleague already talked to this person: the card data names them (mateName), or the card says so
-    const own = card.querySelector(':scope > .hra-line');
-    const peerTxt = (own ? text.replace(textOf(own), '') : text).match(/同事[^\n]{0,12}?(沟通|联系|聊过|打过招呼|招呼过|约面|邀约)[^\n]{0,6}/);
+    const peerTxt = text.match(/同事[^\n]{0,12}?(沟通|联系|聊过|打过招呼|招呼过|约面|邀约)[^\n]{0,6}/);
     const mate = d ? strIn(d, /^mateName$/i) : '';
     const peerChat = mate ? `同事${mate.slice(0, 12)}聊过` : peerTxt ? peerTxt[0].trim().slice(0, 30) : '';
     // graduation label on the card: “27届”, “2027年毕业”, “27年应届生”

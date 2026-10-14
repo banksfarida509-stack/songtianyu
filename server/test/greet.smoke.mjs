@@ -52,6 +52,16 @@ await call('/ext/greeted', { body: { platform: 'zhaopin', uid: 'P2', name: '乙'
 sr = await call('/ext/screen', { body: { platform: 'zhaopin', job: '初中数学老师', cards: [card('P2', '')] }, token });
 ok(sr.results[0].peer === '系统里已有沟通记录', 'peer from our own greeting record');
 
+// one automatic reply per candidate message, whichever page asks first
+let cl = await call('/ext/chat/claim', { body: { candidateId: by.P1.id, sig: 's1:m9', by: 'tabA' }, token });
+ok(cl.ok === true, 'first page claims the reply');
+cl = await call('/ext/chat/claim', { body: { candidateId: by.P1.id, sig: 's1:m9', by: 'tabB' }, token });
+ok(cl.ok === false && /另一个页面/.test(cl.why), 'second page is refused');
+cl = await call('/ext/chat/claim', { body: { candidateId: by.P1.id, sig: 's1:m9', by: 'tabA' }, token });
+ok(cl.ok === true, 'same page may retry');
+cl = await call('/ext/chat/claim', { body: { candidateId: by.P1.id, sig: 's1:m10', by: 'tabB' }, token });
+ok(cl.ok === true, 'a new candidate message can be answered again');
+
 await call('/ext/diag', { body: { kind: 'greet', data: { end: '停止：测试' } }, token });
 const d = await call('/diag');
 ok(d.greet && d.greet.list.length === 1, 'greet stop report stored');

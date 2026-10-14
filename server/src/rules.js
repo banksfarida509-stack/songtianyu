@@ -85,6 +85,8 @@ export function gradYearOf(c) {
     else if (ys.length >= 2) take(Math.max(...ys));
   }
   if (best == null) take(yearIn(c.grad));
+  // the platform's “在校生” mark: still at school, so graduating next year at the earliest
+  if (best == null && /在校/.test(c.grad || '')) take(new Date().getFullYear() + 1);
   if (best == null) {
     const m = `${c.grad || ''} ${c.years || ''} ${c.intent || ''} ${c.expect || ''} ${c.self_eval || ''}`.match(/(?<!\d)(20)?(\d{2})\s*(?:届|年毕业|年应届)/);
     if (m) take(2000 + Number(m[2]));

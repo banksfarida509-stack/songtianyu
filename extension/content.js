@@ -480,6 +480,11 @@
     if (!d || d.blocked || S.sending) return;
     if (auto && (chatSig(S.chat) !== sig || S.autoPaused || S.risk)) return log('会话有变化，取消自动发送');
     S.sending = true; draw();
+    // two pages on the same conversation (a second 消息 tab, a colleague): only one may answer
+    if (auto) {
+      const cl = await api('/ext/chat/claim', { candidateId: S.candidateId, sig, by: INSTANCE });
+      if (cl.data && cl.data.ok === false) { S.sending = false; d.sentAuto = true; log(`${S.chat?.name || ''}：${cl.data.why}，这里不再发送`); S.handledAt = Date.now(); return draw(); }
+    }
     const parts = d.parts && d.parts.length ? d.parts : [d.reply];
     let ok = true;
     for (let i = 0; i < parts.length; i++) {
