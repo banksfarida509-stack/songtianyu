@@ -129,7 +129,9 @@ export function bachelorCheck(c) {
     return { ok: null, ev: '简历没有本科学历的详细信息' };
   }
   const isZhuan = e => eduRank(e.deg) === 2 || (eduRank(e.deg) < 0 && ZHUAN_SCHOOL.test(e.school || ''));
-  const zhuan = edus.find(isZhuan);
+  // a 大专 counts only when it came before the 本科 (a language school after graduating does not)
+  const bachStart = Math.min(...bach.map(e => spanOf(e)[0] || Infinity));
+  const zhuan = edus.find(e => { if (!isZhuan(e)) return false; const zEnd = spanOf(e)[1]; return !zEnd || !Number.isFinite(bachStart) || zEnd <= bachStart + 1; });
   if (zhuan) return { ok: false, ev: `专升本（大专：${zhuan.school || '专科院校'}）` };
   const short = bach.find(e => { const [b, en] = spanOf(e); return b && en && en - b <= 2; });
   if (short) { const [b, en] = spanOf(short); return { ok: false, ev: `本科只读了 ${en - b} 年（${short.school || ''} ${b}–${en}），按专升本处理` }; }

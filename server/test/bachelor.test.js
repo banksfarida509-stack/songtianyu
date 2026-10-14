@@ -27,6 +27,11 @@ test('专升本的其他写法：大专学校没写学历、本科只读两年',
   assert.equal(bachelorCheck(card([{ schoolName: '沈阳大学', educationLevel: '本科', beginDate: '2017.09', endDate: '2021.07' }, { schoolName: '辽宁职业技术学院', beginDate: '2014.09', endDate: '2017.07' }])).ok, false);
 });
 
+test('本科毕业后才读的“大专”（如国外语言学校）不算专升本', () => {
+  const c = card([{ schoolName: '辽宁财贸学院', educationLevel: '本科', beginDate: '2011.09', endDate: '2015.07' }, { schoolName: '日本长野县ici语言学校', educationLevel: '大专', beginDate: '2016.10', endDate: '2017.10' }]);
+  assert.equal(bachelorCheck(c).ok, true);
+});
+
 test('大专、非统招本科：不推荐；统招四年本科、硕士：不受影响', () => {
   assert.equal(screen(card([{ schoolName: '辽宁职业学院', educationLevel: '大专', beginDate: '2018.09', endDate: '2021.07' }], { educationLevel: '大专' }), rules).verdict, '不推荐');
   const nt = screen(card([{ schoolName: '沈阳师范大学', majorName: '物理学', educationLevel: '本科', beginDate: '2017.09', endDate: '2021.07', mode: '自考' }]), rules);
