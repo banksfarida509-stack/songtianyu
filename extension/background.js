@@ -33,7 +33,52 @@ chrome.runtime.onInstalled.addListener(async () => {
   for (const t of await chrome.tabs.query({ url: RECRUIT_TABS })) chrome.tabs.reload(t.id);
 });
 
+// Keep a 消息 page open for each platform in use: auto replies, the unread patrol and
+// follow-ups only run on that page. Every minute: (re)open it as a pinned background tab
+// if it is missing, stop Chrome from discarding it, and wake its patrol (timers in
+// background tabs are throttled to about once a minute).
+const IM_URL = { zhaopin: 'https://rd6.zhaopin.com/app/im', boss: 'https://www.zhipin.com/web/chat/index' };
+const isImUrl = (p, u) => p === 'zhaopin' ? /^https:\/\/rd6\.zhaopin\.com\/app\/im/.test(u || '')
+  : /^https:\/\/(www\.)?zhipin\.com\/web\/chat\//.test(u || '') && !/recommend/.test(u || '');
+const SEEN_FOR = 3 * 3600e3; // a platform counts as "in use" when one of its pages pinged within 3 h
+async function imTabs(p) {
+  return (await chrome.tabs.query({ url: p === 'zhaopin' ? 'https://rd6.zhaopin.com/*' : ['https://www.zhipin.com/*', 'https://zhipin.com/*'] })).filter(t => isImUrl(p, t.url || t.pendingUrl));
+}
+let opening = false;
+async function keepIm(focusPlatform) {
+  if (opening) return;
+  opening = true;
+  try {
+    const st = await chrome.storage.local.get(['keepIm', 'seen_zhaopin', 'seen_boss']);
+    for (const p of ['zhaopin', 'boss']) {
+      const want = p === focusPlatform || (st.keepIm && Date.now() - (st[`seen_${p}`] || 0) < SEEN_FOR);
+      if (!want) continue;
+      let tabs = await imTabs(p);
+      if (!tabs.length) {
+        const t = await chrome.tabs.create({ url: IM_URL[p], pinned: true, active: p === focusPlatform });
+        tabs = [t];
+      } else if (p === focusPlatform) {
+        await chrome.tabs.update(tabs[0].id, { active: true });
+        await chrome.windows.update(tabs[0].windowId, { focused: true });
+      }
+      for (const t of tabs) {
+        chrome.tabs.update(t.id, { autoDiscardable: false }).catch(() => {});
+        chrome.tabs.sendMessage(t.id, { type: 'wake' }).catch(() => {});
+      }
+    }
+  } catch (e) { console.warn('[hra] keepIm', e); } finally { opening = false; }
+}
+chrome.alarms.create('keepIm', { periodInMinutes: 1 });
+chrome.alarms.onAlarm.addListener(a => { if (a.name === 'keepIm') keepIm(); });
+
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+  // a recruiting page reports in (from its ping): remember the platform is in use and whether to keep its 消息 page
+  if (msg?.type === 'seen') {
+    const p = msg.platform === 'boss' ? 'boss' : 'zhaopin';
+    chrome.storage.local.set({ [`seen_${p}`]: Date.now(), keepIm: !!msg.keepIm });
+    return;
+  }
+  if (msg?.type === 'openIm') { keepIm(msg.platform === 'boss' ? 'boss' : 'zhaopin'); return; }
   if (msg?.type === 'api') {
     (async () => {
       const c = await conf();

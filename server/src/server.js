@@ -104,7 +104,7 @@ function candOut(c, full = false) {
 }
 const getCand = id => db.prepare('SELECT * FROM candidates WHERE id=?').get(id);
 const settingsAll = () => ({ org: getSetting(db, 'org'), rules: getSetting(db, 'rules'), schedule: getSetting(db, 'schedule'), ai: getSetting(db, 'ai'), kb: getSetting(db, 'kb'),
-  autoReply: getSetting(db, 'autoReply'), kbDoc: getSetting(db, 'kbDoc') || '', playbook: getSetting(db, 'playbook'), roles: getSetting(db, 'roles') });
+  autoReply: getSetting(db, 'autoReply'), kbDoc: getSetting(db, 'kbDoc') || '', playbook: getSetting(db, 'playbook'), roles: getSetting(db, 'roles'), greet: getSetting(db, 'greet') });
 const hourAgoCN = () => new Date(Date.now() - 3600e3).toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' });
 const autoSentLastHour = () => db.prepare("SELECT COUNT(*) n FROM messages WHERE by='ai-auto' AND at>=?").get(hourAgoCN()).n;
 
@@ -202,35 +202,66 @@ route('GET', '/api/me', 'admin', (req, res, p, user) => send(res, 200, { user, t
 route('GET', '/api/health', 'public', (req, res) => send(res, 200, { ok: true, time: nowCN(), llm: llmConfigured() }));
 
 // ---------- extension endpoints ----------
+// last heartbeat per platform and page kind ("zhaopin:im", "boss:rec" …): auto replies only run
+// on a 消息 page, so the recommend page and the dashboard warn when none is open
+const PAGE_ALIVE_MS = 3 * 60000;
+const extPages = () => getSetting(db, 'ext_pages') || {};
+const imAlive = () => {
+  const pg = extPages(), now = Date.now();
+  return Object.fromEntries(['zhaopin', 'boss'].map(p => [p, !!pg[`${p}:im`] && now - pg[`${p}:im`].ms < PAGE_ALIVE_MS]));
+};
 route('POST', '/api/ext/ping', 'ext', async (req, res) => {
   const b = await body(req);
   setSetting(db, 'ext_last', { at: nowCN(), page: clip(b.page, 60), version: clip(b.version, 20) });
+  const platform = b.platform === 'boss' ? 'boss' : b.platform === 'zhaopin' ? 'zhaopin' : '';
+  if (platform && ['im', 'rec'].includes(b.kind)) setSetting(db, 'ext_pages', { ...extPages(), [`${platform}:${b.kind}`]: { at: nowCN(), ms: Date.now(), version: clip(b.version, 20) } });
   const ar = getSetting(db, 'autoReply');
-  send(res, 200, { ok: true, today: todayCN(), extVersion: EXT_VERSION, auto: { enabled: !!ar.enabled, hours: ar.hours, scanUnread: ar.scanUnread !== false, sentLastHour: autoSentLastHour(), maxPerHour: ar.maxPerHour,
-    autoInvite: ar.autoInvite !== false, place: getSetting(db, 'org').place } });
+  send(res, 200, { ok: true, today: todayCN(), extVersion: EXT_VERSION, imAlive: imAlive(), auto: { enabled: !!ar.enabled, hours: ar.hours, scanUnread: ar.scanUnread !== false, sentLastHour: autoSentLastHour(), maxPerHour: ar.maxPerHour,
+    autoInvite: ar.autoInvite !== false, keepImTab: ar.keepImTab !== false, place: getSetting(db, 'org').place } });
 });
 
 // page-structure reports from the extension (no message content), kept for tuning
 route('POST', '/api/ext/diag', 'ext', async (req, res) => {
   const b = await body(req);
   // chat / invite: 智联; boss / bossRec: BOSS直聘 chat / recommend; stall: self-check report when replies stop
-  const kind = ['chat', 'invite', 'boss', 'bossRec', 'rec', 'stall'].includes(b.kind) ? b.kind : 'chat';
+  const kind = ['chat', 'invite', 'boss', 'bossRec', 'rec', 'stall', 'greet'].includes(b.kind) ? b.kind : 'chat';
   const str = JSON.stringify(b.data ?? null);
   const entry = { at: nowCN(), data: str.length > 20000 ? { truncated: true, head: str.slice(0, 20000) } : b.data };
-  if (kind === 'stall') { const prev = getSetting(db, 'diag_stall'); setSetting(db, 'diag_stall', { ...entry, list: [entry, ...((prev && prev.list) || [])].slice(0, 10) }); }
+  if (kind === 'stall' || kind === 'greet') { const prev = getSetting(db, `diag_${kind}`); setSetting(db, `diag_${kind}`, { ...entry, list: [entry, ...((prev && prev.list) || [])].slice(0, 10) }); }
   else setSetting(db, `diag_${kind}`, entry);
   send(res, 200, { ok: true });
 });
 // ---------- proactive follow-ups ----------
-// a greeting was sent from the recommend page (starts the “no reply in N hours” clock)
+// daily greeting cap per platform and role (role from the recommend page's job title)
+function greetQuota(platform, job) {
+  const roles = getSetting(db, 'roles');
+  const role = roleFor(job, roles);
+  const cap = Math.max(0, Number((getSetting(db, 'greet').daily || {})[role] ?? 0));
+  const used = db.prepare('SELECT COUNT(*) n FROM greet_log WHERE day=? AND platform=? AND role=?').get(todayCN(), platform, role).n;
+  return { role, roleName: (roles[role] || {}).name || role, cap, used, left: Math.max(0, cap - used), continuous: getSetting(db, 'greet').continuous !== false };
+}
+// today's greetings, e.g. { zhaopin: { teacher: 12 }, boss: {} }, shown with the caps on the dashboard
+function greetToday() {
+  const out = { zhaopin: {}, boss: {} };
+  for (const r of db.prepare('SELECT platform, role, COUNT(*) n FROM greet_log WHERE day=? GROUP BY platform, role').all(todayCN())) (out[r.platform] ||= {})[r.role] = r.n;
+  return out;
+}
+route('POST', '/api/ext/greet/quota', 'ext', async (req, res) => {
+  const b = await body(req);
+  send(res, 200, greetQuota(b.platform === 'boss' ? 'boss' : 'zhaopin', clip(b.job, 40)));
+});
+// a greeting was sent from the recommend page (counts toward the daily cap; starts the “no reply in N hours” clock)
 route('POST', '/api/ext/greeted', 'ext', async (req, res) => {
   const b = await body(req);
   const platform = b.platform === 'boss' ? 'boss' : 'zhaopin';
+  const job = clip(b.job, 40);
+  db.prepare('INSERT INTO greet_log(day,platform,role,uid,at) VALUES(?,?,?,?,?)').run(todayCN(), platform, roleFor(job, getSetting(db, 'roles')), b.uid ? String(b.uid) : null, nowCN());
+  const quota = greetQuota(platform, job);
   const c = b.uid ? db.prepare('SELECT * FROM candidates WHERE platform=? AND uid=?').get(platform, String(b.uid)) : null;
-  if (!c) return send(res, 200, { ok: false });
-  db.prepare('UPDATE candidates SET greeted_ms=COALESCE(greeted_ms, ?), job=COALESCE(job, ?), attend=CASE WHEN attend=\'未联系\' THEN \'沟通中\' ELSE attend END WHERE id=?').run(Date.now(), clip(b.job, 40) || null, c.id);
+  if (!c) return send(res, 200, { ok: false, quota });
+  db.prepare('UPDATE candidates SET greeted_ms=COALESCE(greeted_ms, ?), job=COALESCE(job, ?), attend=CASE WHEN attend=\'未联系\' THEN \'沟通中\' ELSE attend END WHERE id=?').run(Date.now(), job || null, c.id);
   addEvent(db, c.id, '已打招呼');
-  send(res, 200, { ok: true });
+  send(res, 200, { ok: true, quota });
 });
 const followCfg = () => (getSetting(db, 'autoReply').followup || {});
 route('POST', '/api/ext/followups', 'ext', async (req, res) => {
@@ -552,7 +583,7 @@ route('GET', '/api/stats', 'admin', (req, res) => {
     screenedToday: screenedToday.n || 0, recommendedToday: screenedToday.ok || 0,
     todayInterviews: todayAppts.n || 0, todayAssigned: todayAppts.asg || 0,
     pending: byAttend['待排程'] || 0, days, todo, interviewers: interviewerStatus(db, today),
-    ext: getSetting(db, 'ext_last'), llm: llmConfigured(),
+    ext: getSetting(db, 'ext_last'), extPages: extPages(), imAlive: imAlive(), greetToday: greetToday(), greet: getSetting(db, 'greet'), llm: llmConfigured(),
   });
 });
 
@@ -726,10 +757,10 @@ route('PATCH', '/api/interviewers/:id', 'admin', async (req, res, p) => {
 });
 
 // settings
-route('GET', '/api/settings', 'admin', (req, res) => send(res, 200, { ...settingsAll(), extToken: getSetting(db, 'ext_token'), ext: getSetting(db, 'ext_last'), llm: llmConfigured() }));
+route('GET', '/api/settings', 'admin', (req, res) => send(res, 200, { ...settingsAll(), extToken: getSetting(db, 'ext_token'), ext: getSetting(db, 'ext_last'), extPages: extPages(), imAlive: imAlive(), greetToday: greetToday(), llm: llmConfigured() }));
 route('PUT', '/api/settings', 'admin', async (req, res) => {
   const b = await body(req);
-  for (const k of ['org', 'rules', 'schedule', 'ai', 'kb', 'autoReply', 'playbook', 'roles']) if (b[k] !== undefined) setSetting(db, k, b[k]);
+  for (const k of ['org', 'rules', 'schedule', 'ai', 'kb', 'autoReply', 'playbook', 'roles', 'greet']) if (b[k] !== undefined) setSetting(db, k, b[k]);
   if (typeof b.kbDoc === 'string') setSetting(db, 'kbDoc', clip(b.kbDoc, 20000));
   send(res, 200, settingsAll());
 });
@@ -771,7 +802,7 @@ route('POST', '/api/kb/learn', 'admin', async (req, res) => {
   }
   send(res, 200, r);
 });
-route('GET', '/api/diag', 'admin', (req, res) => send(res, 200, Object.fromEntries(['chat', 'invite', 'boss', 'bossRec', 'rec', 'stall'].map(k => [k, getSetting(db, `diag_${k}`)]))));
+route('GET', '/api/diag', 'admin', (req, res) => send(res, 200, Object.fromEntries(['chat', 'invite', 'boss', 'bossRec', 'rec', 'stall', 'greet'].map(k => [k, getSetting(db, `diag_${k}`)]))));
 
 route('POST', '/api/settings/rotate-token', 'admin', (req, res) => { const t = randomToken(18); setSetting(db, 'ext_token', t); send(res, 200, { extToken: t }); });
 route('POST', '/api/settings/rescreen', 'admin', async (req, res) => {

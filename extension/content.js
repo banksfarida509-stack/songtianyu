@@ -134,13 +134,18 @@
     const all = Object.values(S.results);
     const n = v => all.filter(r => r.verdict === v).length;
     const rk = rank();
-    let b = `<div class="hra-stats"><div><b>${all.length}</b>已初筛</div><div><b>${n('推荐')}</b>推荐</div><div><b>${n('待确认')}</b>待确认</div><div><b>${n('不推荐')}</b>不推荐</div></div>`;
+    let b = '';
+    if (S.imAlive === false) b += `<div class="hra-err">自动回复没有运行：${SITE}「消息」页没有打开，候选人的消息不会被回复。<button class="hra-btn sm" data-a="open-im">打开消息页</button></div>`;
+    b += `<div class="hra-stats"><div><b>${all.length}</b>已初筛</div><div><b>${n('推荐')}</b>推荐</div><div><b>${n('待确认')}</b>待确认</div><div><b>${n('不推荐')}</b>不推荐</div></div>`;
     b += `<div class="hra-sub">推荐顺序（${esc(S.job || '当前岗位')}${S.roleName ? ` · 按${esc(S.roleName)}岗规则初筛` : ''}）</div><div class="hra-rank">${rk.length ? rk.slice(0, 12).map(r => `<div class="hra-ri" data-uid="${esc(r.uid)}"><b>${r.score}</b><span>${esc(r.name || '')}<i>${esc(r.reason || '')}</i></span><em>${r.greeted ? '已打招呼' : ''}</em></div>`).join('') : '<p class="hra-muted">暂无推荐的人。滚动页面加载更多，插件会自动读取。</p>'}</div>`;
+    const q = S.quota;
+    const qTxt = q ? `今日${esc(q.roleName)}岗已打 ${q.used} / ${q.cap}` : '';
     b += S.greeting
-      ? `<p class="hra-muted">正在打招呼：已完成 ${S.done} / ${S.target}${S.phase ? ' · ' + esc(S.phase) : ''}</p><button class="hra-btn" data-a="stop">停止打招呼</button>`
+      ? `<p class="hra-muted">正在${S.cont ? '持续' : ''}打招呼：本次 ${S.done}${S.cont ? '' : ` / ${S.target}`}${qTxt ? ` · ${qTxt}` : ''}${S.phase ? ' · ' + esc(S.phase) : ''}</p><button class="hra-btn" data-a="stop">停止打招呼</button>`
       : S.confirmGreet
-        ? `<p class="hra-muted">按 AI 推荐顺序打招呼，当前页推荐 ${rk.filter(r => !r.greeted).length} 位未打招呼；不够时自动往下加载更多。会消耗平台打招呼次数。</p>
-           <div class="hra-row"><label class="hra-muted">本次打 <input id="hra-n" type="number" min="1" max="100" value="${S.target || 10}" style="width:56px"> 位</label></div>
+        ? `<p class="hra-muted">按 AI 推荐顺序打招呼，当前页推荐 ${rk.filter(r => !r.greeted).length} 位未打招呼；不够时自动往下加载更多。会消耗平台打招呼次数。${qTxt ? `<br><b>${qTxt}</b>（上限在后台“设置 → 推荐页打招呼”修改）` : ''}</p>
+           <div class="hra-row"><label class="hra-muted"><input type="checkbox" id="hra-cont" ${S.cont ? 'checked' : ''}> 持续打到今日上限（页面刷新后自动继续）</label></div>
+           ${S.cont ? '' : `<div class="hra-row"><label class="hra-muted">本次打 <input id="hra-n" type="number" min="1" max="100" value="${S.target || 10}" style="width:56px"> 位</label></div>`}
            <div class="hra-muted">每位间隔</div><div class="hra-seg">${GAPS.map(([lo, hi], i) => `<button data-a="gap:${i}" class="${S.gap === i ? 'on' : ''}">${lo}–${hi} 秒</button>`).join('')}</div>
            ${S.gap === 0 ? '<p class="hra-muted" style="color:#B25E09">间隔越短，越容易触发平台“操作频繁”验证；出现验证会自动停止。</p>' : ''}
            <div class="hra-row"><button class="hra-btn pri" data-a="greet-go">确认开始</button><button class="hra-btn" data-a="greet-cancel">取消</button></div>`
@@ -202,6 +207,8 @@
     panel.querySelectorAll('[data-a]').forEach(b => b.onclick = e => { e.preventDefault(); act(b.dataset.a); });
     const nIn = panel.querySelector('#hra-n');
     if (nIn) nIn.oninput = () => { S.target = parseInt(nIn.value, 10) || S.target; };
+    const cIn = panel.querySelector('#hra-cont');
+    if (cIn) cIn.onchange = () => { S.cont = cIn.checked; S.contTouched = true; draw(); };
     panel.querySelectorAll('.hra-ri[data-uid]').forEach(el => el.onclick = () => {
       const card = document.querySelector(`[data-hra-uid="${CSS.escape(el.dataset.uid)}"]`);
       card && card.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -214,7 +221,8 @@
   async function act(a) {
     if (a === 'toggle') { S.collapsed = !S.collapsed; return draw(); }
     if (a === 'mini') { if (panel.dataset.dragged) return; S.mini = !S.mini; savePanel(); return draw(); }
-    if (a === 'greet') { S.confirmGreet = true; return draw(); }
+    if (a === 'open-im') { chrome.runtime.sendMessage({ type: 'openIm', platform: PLATFORM }, () => void chrome.runtime.lastError); log('正在打开消息页（固定在标签栏最左边）'); return; }
+    if (a === 'greet') { S.confirmGreet = true; draw(); return loadQuota(); }
     if (a === 'greet-cancel') { S.confirmGreet = false; return draw(); }
     if (a.startsWith('gap:')) {
       S.gap = Math.max(0, Math.min(GAPS.length - 1, +a.slice(4)));
@@ -222,11 +230,15 @@
       return draw();
     }
     if (a === 'greet-go') {
-      const n = parseInt(panel.querySelector('#hra-n')?.value, 10);
-      S.target = Math.max(1, Math.min(100, n || 10));
+      const q = await loadQuota();
+      if (q && q.left <= 0) { S.confirmGreet = false; log(`今日${q.roleName}岗打招呼已达上限 ${q.cap} 位，明天再继续`); return; }
+      if (!S.cont) {
+        const n = parseInt(panel.querySelector('#hra-n')?.value, 10);
+        S.target = Math.max(1, Math.min(100, n || 10));
+      }
       S.confirmGreet = false; return greetLoop();
     }
-    if (a === 'stop') { S.stop = true; return; }
+    if (a === 'stop') { S.stop = true; setGreetRun(null); return; }
     if (a === 'suggest') return suggest(true);
     if (a === 'kb') { chrome.runtime.sendMessage({ type: 'openOptions' }); return; }
     if (a === 'collect') { S.confirmCollect = true; return draw(); }
@@ -273,6 +285,8 @@
     for (const x of r.data.results) S.results[x.uid] = { ...x, name: names[x.uid] };
     log(`读取 ${fresh.length} 张卡片并初筛`);
     paintLines(); draw();
+    if (S.quotaJob !== S.job) { S.quotaJob = S.job; loadQuota(); }
+    maybeResumeGreet();
     const need = r.data.results.filter(x => x.reasonBy !== 'ai').map(x => x.uid);
     if (need.length) {
       const rr = await api('/ext/reasons', { platform: PLATFORM, uids: need });
@@ -299,14 +313,58 @@
       el.classList.toggle('hra-v-ok', cls === 'ok'); el.classList.toggle('hra-v-warn', cls === 'warn'); el.classList.toggle('hra-v-no', cls === 'no');
     }
   }
-  // Greets up to S.target recommended candidates; when the loaded list runs
-  // out it asks the page to load more (up to 4 tries without new 推荐).
+  // today's greeting count and cap for this platform and the job's role (from the server)
+  async function loadQuota() {
+    const r = await api('/ext/greet/quota', { platform: PLATFORM, job: S.job });
+    if (r.data) {
+      S.quota = r.data;
+      if (!S.contTouched) S.cont = r.data.continuous;
+      draw();
+    }
+    return S.quota || null;
+  }
+  // a continuous run survives page refreshes / reloads: remembered per platform for today
+  const RUN_KEY = `greetRun_${PLATFORM}`;
+  const today = () => new Date().toLocaleDateString('sv-SE');
+  const setGreetRun = v => { try { v ? chrome.storage.local.set({ [RUN_KEY]: { ...v, day: today() } }) : chrome.storage.local.remove(RUN_KEY); } catch { /* not remembered */ } };
+  let resumeChecked = false;
+  async function maybeResumeGreet() {
+    if (resumeChecked || S.greeting || S.dead || !isRec() || !rank().length) return;
+    resumeChecked = true;
+    let run = null;
+    try { run = (await chrome.storage.local.get(RUN_KEY))[RUN_KEY]; } catch { return; }
+    if (!run || run.day !== today()) return;
+    const q = await loadQuota();
+    if (!q || q.left <= 0) return setGreetRun(null);
+    S.cont = true; S.contTouched = true;
+    log('上次的持续打招呼还没打完，10 秒后自动继续（点“停止打招呼”可取消）');
+    S.greeting = true; S.phase = '10 秒后继续'; draw();
+    for (let t = 0; t < 10000 && !S.stop; t += 500) await sleep(500);
+    S.greeting = false;
+    if (S.stop) { S.stop = false; setGreetRun(null); log('已取消自动继续'); return draw(); }
+    greetLoop();
+  }
+  // Greets recommended candidates in rank order: S.target of them, or in continuous mode
+  // until today's cap for the role. When the loaded list runs out it asks the page to
+  // load more (up to 4 tries without new 推荐).
   async function greetLoop() {
     S.greeting = true; S.stop = false; S.done = 0; S.phase = ''; draw();
+    if (S.cont) setGreetRun({ at: Date.now() });
     const skip = new Set();
-    let dry = 0, why = '', fails = 0;
+    let dry = 0, why = '', fails = 0, away = 0;
     const onPage = uid => !!document.querySelector(`[data-hra-uid="${CSS.escape(uid)}"]`);
-    while (S.done < S.target && !S.stop && !S.risk && !S.dead) {
+    const goal = () => S.cont ? Infinity : S.target;
+    while (S.done < goal() && !S.stop && !S.risk && !S.dead) {
+      if (S.quota && S.quota.left <= 0) { why = `今日${S.quota.roleName}岗打招呼已达上限 ${S.quota.cap} 位`; break; }
+      // a greeting sometimes takes 智联 to another page: go back to the recommend list and continue
+      if (!isRec()) {
+        if (PLATFORM !== 'zhaopin' || ++away > 3) { why = '页面离开了推荐列表'; break; }
+        S.phase = '回到推荐列表…'; draw();
+        history.back();
+        for (let t = 0; t < 5000 && !S.stop; t += 500) await sleep(500);
+        continue;
+      }
+      away = 0;
       const r = rank().find(x => !x.greeted && !skip.has(x.uid) && onPage(x.uid));
       if (!r) {
         if (++dry > 4) { why = '当前岗位已没有更多 AI 推荐的候选人'; break; }
@@ -322,13 +380,17 @@
       log(`${r.name}：${res.msg}`);
       if (res.ok) {
         S.results[r.uid].greeted = true;
-        if (!/已沟通过/.test(res.msg)) { S.done++; fails = 0; api('/ext/greeted', { platform: PLATFORM, uid: r.uid, name: r.name, job: S.job }); }
+        if (!/已沟通过/.test(res.msg)) {
+          S.done++; fails = 0;
+          const g = await api('/ext/greeted', { platform: PLATFORM, uid: r.uid, name: r.name, job: S.job });
+          if (g.data?.quota) S.quota = g.data.quota;
+        }
         paintLines(); draw();
       }
       else skip.add(r.uid);
       if (res.dialog) { S.stop = true; why = '平台弹出窗口，需要人工处理（见上一条日志）'; break; }
       if (res.unverified && ++fails >= 3) { S.stop = true; why = '连续 3 位未确认成功，请看页面是否有提示'; break; }
-      if (S.done >= S.target) break;
+      if (S.done >= goal() || (S.quota && S.quota.left <= 0)) continue; // the loop head ends the run with the reason
       // nothing was sent (already contacted / card gone): move on without the pause
       if (/已沟通过/.test(res.msg) || (!res.ok && !res.unverified)) continue;
       const [lo, hi] = GAPS[S.gap] || GAPS[3];
@@ -337,7 +399,12 @@
       for (let t = 0; t < wait && !S.stop && !S.risk; t += 500) await sleep(500);
     }
     S.greeting = false; S.phase = '';
-    log(S.risk ? '因平台风控提示停止' : why ? `停止：${why}（本次成功 ${S.done} 位）` : S.stop ? `已手动停止（本次成功 ${S.done} 位）` : `完成：本次成功打招呼 ${S.done} 位`);
+    const end = S.risk ? '因平台风控提示停止' : why ? `停止：${why}（本次成功 ${S.done} 位）` : S.stop ? `已手动停止（本次成功 ${S.done} 位）` : `完成：本次成功打招呼 ${S.done} 位`;
+    log(end);
+    // a continuous run is resumed after a refresh only when it was interrupted, not when it ended
+    if (S.stop || S.risk || why) setGreetRun(null);
+    if (!S.cont) setGreetRun(null);
+    api('/ext/diag', { kind: 'greet', data: { version: VERSION, platform: PLATFORM, job: S.job, cont: !!S.cont, done: S.done, quota: S.quota || null, end, log: S.log.slice(0, 15) } });
     draw();
   }
 
@@ -629,12 +696,18 @@
     report(kind, { auto: true });
   }, 20000);
 
-  const ping = () => api('/ext/ping', { page: location.pathname, version: VERSION }).then(r => {
+  const pageKind = () => isIm() ? 'im' : isRec() ? 'rec' : '';
+  const ping = () => api('/ext/ping', { page: location.pathname, version: VERSION, platform: PLATFORM, kind: pageKind() }).then(r => {
     if (r.data?.extVersion) checkVersion(r.data.extVersion);
     S.err = r.error || (S.err.startsWith('连不上') || S.err.startsWith('插件') ? '' : S.err);
     if (r.data?.auto) { const was = S.auto?.enabled; S.auto = r.data.auto; if (was === false && S.auto.enabled) log('后台已开启全自动回复'); }
+    if (r.data?.imAlive) S.imAlive = !!r.data.imAlive[PLATFORM] || isIm();
+    // tell the background which platform is in use, so it keeps that platform's 消息 page open
+    if (r.data?.auto && pageKind()) chrome.runtime.sendMessage({ type: 'seen', platform: PLATFORM, keepIm: !!(r.data.auto.enabled && r.data.auto.keepImTab) }, () => void chrome.runtime.lastError);
     draw();
   });
+  // the background wakes the 消息 page every minute (its own timers are throttled while the tab is in the background)
+  chrome.runtime.onMessage.addListener(m => { if (m?.type === 'wake' && isIm() && !S.dead) { patrol(); if (Date.now() - (S.pingAt || 0) > 50000) { S.pingAt = Date.now(); ping(); } } });
   ping(); setInterval(ping, 60000);
   draw();
 })();

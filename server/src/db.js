@@ -89,6 +89,7 @@ export const DEFAULT_SETTINGS = {
     delayMin: 25, delayMax: 90,   // 收到消息后等待多少秒再回（像真人）
     maxPerHour: 40,               // 每小时最多自动发送条数
     scanUnread: true,             // 自动打开有未读消息的会话
+    keepImTab: true,              // 插件自动打开并保持招聘平台的「消息」页（自动回复只在消息页运行）
     repeatLimit: 2,               // 同一问题问到第几遍转本人回复
     autoInvite: true,             // 约定时间后，全自动模式下自动点平台「约面试」发邀约
     // 主动跟进：打招呼后久未回复 / 对方已读不回时，发一次跟进消息（全自动开启时才发）
@@ -101,6 +102,8 @@ export const DEFAULT_SETTINGS = {
     },
     style: '像学校招聘老师在手机上回消息：口语、简短、自然，一次只问一个问题；先回答对方的问题，再顺带推进；不用“您好！感谢您的…”这类客服腔，不用表情符号，不说“亲”。',
   },
+  // 推荐页打招呼：持续模式打完一批自动接着打，直到当天该岗位的上限（每个平台分别计数）
+  greet: { continuous: true, daily: { teacher: 100, xueguan: 50, zixun: 50, other: 30 } },
   // 知识库（整段粘贴，AI 回复只能用这里和下面问答里的事实）
   kbDoc: '',
   // 岗位：教师 / 学管师 / 咨询师 — 初筛规则、约聊要了解的问题、沟通要点（教师的初筛仍用上面的 rules）
@@ -145,6 +148,9 @@ export function openDb(file) {
     db.exec(`UPDATE candidates SET resume_status='已收到', reserve=1, resume_at=(SELECT MIN(at) FROM messages m WHERE m.candidate_id=candidates.id AND m.dir='in' AND m.text LIKE '[卡片·附件简历]%')
       WHERE id IN (SELECT candidate_id FROM messages WHERE dir='in' AND text LIKE '[卡片·附件简历]%')`);
   }
+  // one row per greeting sent from a recommend page, for the per-platform, per-role daily cap
+  db.exec('CREATE TABLE IF NOT EXISTS greet_log (id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL, platform TEXT NOT NULL, role TEXT NOT NULL, uid TEXT, at TEXT NOT NULL)');
+  db.exec('CREATE INDEX IF NOT EXISTS greet_log_day ON greet_log(day, platform, role)');
   dedupeBossIds(db);
   // job roles: each candidate and each knowledge-base document belongs to a role (通用 = all)
   if (!db.prepare('PRAGMA table_info(candidates)').all().some(c => c.name === 'role')) db.exec("ALTER TABLE candidates ADD COLUMN role TEXT NOT NULL DEFAULT 'teacher'");

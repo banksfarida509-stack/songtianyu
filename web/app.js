@@ -89,10 +89,17 @@ async function vHome(m) {
   const kp = [['今日读取', d.screenedToday, '插件从招聘平台读取'], ['今日推荐', d.recommendedToday, 'AI 初筛结论为推荐'], ['人才池', d.total, '全部候选人'],
     ['今日面试', d.todayInterviews, `已分配面试官 ${d.todayAssigned}`, true], ['待排程', d.pending, d.pending ? '可一键 AI 安排' : '没有待排程'], ['插件状态', d.ext ? '在线' : '未连接', d.ext ? `最近 ${d.ext.at.slice(5, 16)}` : '安装插件后显示']];
   const maxDay = Math.max(1, ...d.days.map(x => x.n));
+  // per platform: is the 消息 page (where auto replies run) open, and today's greetings against the caps
+  const pg = d.extPages || {}, caps = (d.greet || {}).daily || {};
+  const pageTag = (p, k) => { const x = pg[`${p}:${k}`]; const on = x && Date.now() - x.ms < 180000; return `<span class="tag ${on ? 't-ok' : k === 'im' ? 't-bad' : 't-grey'}">${k === 'im' ? '消息页' : '推荐页'} ${on ? '在线' : '未打开'}</span>${x ? `<span class="muted small"> 最近 ${esc(x.at.slice(5, 16))}</span>` : ''}`; };
+  const runRow = (p, name) => `<div class="ivrow" style="flex-wrap:wrap;gap:8px"><b>${name}</b>${pageTag(p, 'im')}${pageTag(p, 'rec')}
+    <span class="muted small">今日打招呼：${Object.entries(ROLE_LABEL).filter(([k]) => caps[k] !== undefined).map(([k, l]) => `${l} ${(d.greetToday?.[p] || {})[k] || 0}/${caps[k]}`).join(' · ')}</span></div>`;
+  const runCard = `<div class="card" style="margin-bottom:16px"><div class="card-h"><h3>插件运行状态</h3><span class="sub">自动回复只在招聘平台的「消息」页运行；消息页显示“未打开”时，候选人的消息不会被回复</span></div>
+    <div class="card-b ivlist">${runRow('zhaopin', '智联')}${runRow('boss', 'BOSS直聘')}</div></div>`;
   m.innerHTML = ph('总览', `今天 ${d.today}。AI 在招聘平台读取、初筛、约聊，你只处理下面的事项。${d.llm ? '' : ' <b style="color:var(--bad)">AI 模型未配置，当前使用规则回退。</b>'}`,
     `<button class="btn" data-go="screen">采集初筛</button><button class="btn pri" data-go="sched">今日面试安排</button>`) +
     (d.total === 0 ? `<div class="card" style="margin-bottom:16px"><div class="empty-state"><b>还没有候选人数据</b>在“设置”里下载并安装浏览器插件，打开智联推荐人才页即自动读取初筛；也可以先在“设置 → 示例数据”导入示例看效果。</div></div>` : '') +
-    `<div class="kpis">${kp.map(k => `<div class="card kpi ${k[3] ? 'hot' : ''}"><span class="l">${k[0]}</span><span class="v num">${esc(k[1])}</span><span class="s">${esc(k[2])}</span></div>`).join('')}</div>
+    runCard + `<div class="kpis">${kp.map(k => `<div class="card kpi ${k[3] ? 'hot' : ''}"><span class="l">${k[0]}</span><span class="v num">${esc(k[1])}</span><span class="s">${esc(k[2])}</span></div>`).join('')}</div>
     <div class="g2">
       <div class="card"><div class="card-h"><h3>需要你处理<span class="sub">${d.todo.length} 件 · 其余由 AI 处理</span></h3></div>
         <div class="card-b todo">${d.todo.length ? d.todo.map(t => `<div class="todo-i"><span class="tag ${{ '待你确认': 't-warn', '转人工': 't-bad', '改期中': 't-ai' }[t.k] || 't-grey'}">${esc(t.k)}</span><div><b>${esc(t.name)}</b><p>${esc(t.d || '')}</p></div><button class="btn sm" data-open="${t.id}">查看</button></div>`).join('') : '<p class="muted small" style="margin:0">没有需要你处理的事项。</p>'}</div></div>
@@ -514,7 +521,7 @@ async function vKb(m) {
 async function vSettings(m) {
   m.innerHTML = loading;
   const [st, ivs] = await Promise.all([api('/settings'), api('/interviewers')]);
-  const R = st.rules, SC = st.schedule, AI = st.ai, ORG = st.org, AR = st.autoReply, RO = st.roles || {}, FU = AR.followup || {};
+  const R = st.rules, SC = st.schedule, AI = st.ai, ORG = st.org, AR = st.autoReply, RO = st.roles || {}, FU = AR.followup || {}, GR = st.greet || {};
   const MODES = { auto: '全自动', semi: '半自动', human: '转人工' };
   const AR_CATS = { '跟进': '对方久未回复时的主动跟进（见下方“主动跟进”设置）', '投递-符合': '主动投递、初筛符合 → 感谢并邀约初试', '投递-不符合': '主动投递、初筛不符合 → 礼貌婉拒', '投递-待确认': '主动投递、简历信息不全 → 先问关键信息',
     提问: '学校在哪？上几节课？', 提供信息: '有初中数学教资，2 月能到岗', 约面时间: '明天下午可以去面试', 确认参加: '好的，我会准时到',
@@ -576,6 +583,7 @@ async function vSettings(m) {
         <label class="fi">最短等待（秒）<input id="ar-d0" type="number" value="${esc(AR.delayMin)}"></label><label class="fi">最长等待（秒）<input id="ar-d1" type="number" value="${esc(AR.delayMax)}"></label>
         <label class="fi">每小时最多自动发送<input id="ar-max" type="number" value="${esc(AR.maxPerHour)}"></label>
         <label class="fi" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" id="ar-scan" style="width:auto" ${AR.scanUnread !== false ? 'checked' : ''}>自动打开有未读消息的会话</label>
+        <label class="fi full" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" id="ar-keep" style="width:auto" ${AR.keepImTab !== false ? 'checked' : ''}>插件自动打开并保持「消息」页（固定标签页，被关掉会重新打开；自动回复只在消息页运行）</label>
         <label class="fi full" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" id="ar-inv" style="width:auto" ${AR.autoInvite !== false ? 'checked' : ''}>约定面试时间后，自动在平台点「约面试」发送面试邀约（全自动时）</label>
         <label class="fi full" style="flex-direction:row;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="fu-on" style="width:auto" ${FU.enabled !== false ? 'checked' : ''}><b>主动跟进</b><span class="small muted">（对方不回复时，我们主动发一次跟进，引导继续沟通和约面）</span></label>
         <label class="fi">打招呼后多少小时未回复就跟进<input id="fu-gh" type="number" step="0.5" min="0.5" value="${esc(FU.greetHours ?? 3)}"></label>
@@ -584,6 +592,10 @@ async function vSettings(m) {
         <label class="fi">每位候选人最多跟进几次<input id="fu-max" type="number" min="1" value="${esc(FU.maxTotal ?? 3)}"></label>
         <label class="fi full">回复风格（让 AI 像真人一样说话）<textarea id="ar-style" style="min-height:70px">${esc(AR.style)}</textarea></label></div>
       <div class="inline-form"><button class="btn pri" id="ar-save">保存</button></div></div></div>
+    <div class="card"><div class="card-h"><h3>推荐页打招呼</h3><span class="sub">每个平台分别计数，岗位按推荐页当前职位名识别</span></div><div class="card-b"><div class="grid-form">
+      <label class="fi full" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" id="g-cont" style="width:auto" ${GR.continuous !== false ? 'checked' : ''}><b>持续打招呼</b><span class="small muted">（打完一批自动接着打，直到当天上限；页面刷新后自动继续）</span></label>
+      ${Object.entries(RO).map(([k, r]) => `<label class="fi">${esc(r.name)}：每天每个平台最多<input type="number" min="0" data-g-cap="${k}" value="${esc((GR.daily || {})[k] ?? 0)}"></label>`).join('')}</div>
+      <div class="inline-form"><button class="btn pri" id="g-save">保存</button></div></div></div>
     <div class="card"><div class="card-h"><h3>AI 对候选人的身份</h3></div><div class="card-b"><div class="grid-form">
       <label class="fi full">身份（AI 以这个身份第一人称回复）<input id="o-role" value="${esc(ORG.role || '')}" placeholder="招聘约访官，同时负责初试面试"></label>
       <label class="fi">候选人怎么称呼你（可空）<input id="o-agent" value="${esc(ORG.agentName || '')}" placeholder="例如：王老师"></label>
@@ -625,10 +637,15 @@ async function vSettings(m) {
     const policy = {}; $$('[data-pol]', m).forEach(s => { policy[s.dataset.pol] = s.value; });
     const d0 = Math.max(5, +$('#ar-d0').value || 25), d1 = Math.max(d0, +$('#ar-d1').value || 90);
     return { enabled: $('#ar-on').checked, hours: [$('#ar-h0').value || '08:30', $('#ar-h1').value || '21:00'], delayMin: d0, delayMax: d1,
-      maxPerHour: Math.max(1, +$('#ar-max').value || 40), scanUnread: $('#ar-scan').checked, policy, style: $('#ar-style').value.trim(),
+      maxPerHour: Math.max(1, +$('#ar-max').value || 40), scanUnread: $('#ar-scan').checked, keepImTab: $('#ar-keep').checked, policy, style: $('#ar-style').value.trim(),
       repeatLimit: Math.max(2, +$('#ar-rep').value || 2), autoInvite: $('#ar-inv').checked,
       followup: { enabled: $('#fu-on').checked, greetHours: Math.max(0.5, +$('#fu-gh').value || 3), readHours: Math.max(0.5, +$('#fu-rh').value || 1),
         onlyIfRead: $('#fu-read').checked, maxTotal: Math.max(1, +$('#fu-max').value || 3) } };
+  };
+  $('#g-save').onclick = () => {
+    const daily = { ...(GR.daily || {}) };
+    $$('[data-g-cap]', m).forEach(i => { daily[i.dataset.gCap] = Math.max(0, parseInt(i.value, 10) || 0); });
+    save({ greet: { ...GR, continuous: $('#g-cont').checked, daily } });
   };
   $('#ar-save').onclick = () => save({ autoReply: arBody() }, $('#ar-on').checked ? '已保存：全自动回复已开启' : '已保存');
   // roles: questions keep their field key when the wording is unchanged or by position
