@@ -22,6 +22,29 @@ test('主动投递 + 不符合 → 婉拒，标记不合适，可全自动', asy
   assert.equal(decideMode(d, { autoReply: AR, nowHM: '10:00', sentLastHour: 0 }).mode, 'auto');
 });
 
+test('投递后先聊了几句，读到简历判不符合 → 下一条礼貌婉拒', async () => {
+  const h = [...ask, { dir: 'out', text: '收到你的投递，你现在是在职还是已经离职？' }, { dir: 'in', text: '已经离职了' }];
+  const d = await suggestReply({ verdict: '不推荐', reason: '专升本', attend: '沟通中', slots: {} }, h, { settings, db, origin: 'applied', offer });
+  assert.equal(d.intent, '投递-不符合');
+  assert.equal(d.stateChange.attend, '不合适');
+  assert.doesNotMatch(d.reply, /专升本|学历/);
+});
+
+test('同事在会话里亲自聊过，或已约面试 → 不自动婉拒', async () => {
+  const h = [...ask, { dir: 'out', text: '看你简历还是蛮合适的，方便聊聊吗', human: true }, { dir: 'in', text: '可以' }];
+  const d = await suggestReply({ verdict: '不推荐', attend: '沟通中', slots: {} }, h, { settings, db, origin: 'applied', offer });
+  assert.notEqual(d.intent, '投递-不符合');
+  const h2 = [...ask, { dir: 'out', text: '你明天上午方便来面试吗？' }, { dir: 'in', text: '可以' }];
+  const d2 = await suggestReply({ verdict: '不推荐', attend: '待确认', slots: {} }, h2, { settings, db, origin: 'applied', offer });
+  assert.notEqual(d2.intent, '投递-不符合');
+});
+
+test('我们先打招呼的会话，判不符合也不自动婉拒', async () => {
+  const h = [{ dir: 'out', text: '你好，看了你的简历比较适合' }, { dir: 'in', text: '你好' }, { dir: 'out', text: '你现在在职吗？' }, { dir: 'in', text: '离职了' }];
+  const d = await suggestReply({ verdict: '不推荐', attend: '沟通中', slots: {} }, h, { settings, db, origin: 'greeted', offer });
+  assert.notEqual(d.intent, '投递-不符合');
+});
+
 test('主动投递 + 符合 → 先寒暄、问在职情况，不急着约时间', async () => {
   const d = await suggestReply({ verdict: '推荐', slots: {} }, ask, { settings, db, origin: 'applied', offer });
   assert.equal(d.intent, '投递-符合');

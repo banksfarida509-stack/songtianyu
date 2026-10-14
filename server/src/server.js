@@ -464,13 +464,17 @@ function storeMessages(c, list) {
 }
 // history for the AI: messages + candidate questions asked before the current unanswered ones
 function chatContext(cid) {
-  const rows = db.prepare('SELECT id,dir,text,topic FROM messages WHERE candidate_id=? ORDER BY id').all(cid);
+  const rows = db.prepare('SELECT id,dir,by,text,topic FROM messages WHERE candidate_id=? ORDER BY id').all(cid);
   const lastOut = rows.map(r => r.dir).lastIndexOf('out');
   // an outgoing message sent word for word to 2+ candidates is a template greeting, not a reply
   const tpl = db.prepare("SELECT COUNT(DISTINCT candidate_id) n FROM messages WHERE dir='out' AND text=?");
-  const isTpl = r => r.dir === 'out' && (/^\[?(再次)?招呼语/.test(r.text) || tpl.get(r.text).n >= 2);
+  const isTpl = r => r.dir === 'out' && (/^\[?(再次)?招呼语|^\[卡片/.test(r.text) || tpl.get(r.text).n >= 2);
+  // a person on our side wrote it: read back from the page (by 'staff') and not one of the AI's own replies
+  const aiTexts = rows.filter(r => r.dir === 'out' && /^ai/.test(r.by)).map(r => r.text);
+  const isHuman = r => r.dir === 'out' && r.by === 'staff' && !isTpl(r) && !aiTexts.some(t => t.includes(String(r.text).slice(0, 15)));
   return {
-    history: rows.map(r => ({ dir: r.dir, text: r.text, tpl: isTpl(r) })),
+    history: rows.filter(r => !/^ai/.test(r.by) || !rows.some(x => x.by === 'staff' && x.dir === 'out' && r.text.includes(String(x.text).slice(0, 15))))
+      .map(r => ({ dir: r.dir, text: r.text, tpl: isTpl(r), human: isHuman(r) })),
     earlierQuestions: rows.slice(0, Math.max(0, lastOut)).filter(r => r.dir === 'in').map(r => ({ text: r.text, topic: r.topic })),
     unansweredIds: rows.slice(lastOut + 1).filter(r => r.dir === 'in').map(r => r.id),
   };

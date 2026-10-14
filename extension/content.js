@@ -595,7 +595,7 @@
     if (S.pending) return note('等待自动发送当前回复');
     if (S.sending) return note('正在发送…');
     // a conversation just opened whose messages are still loading: stay on it (up to 12 s), or it is skipped for good
-    if (S.openedAt && Date.now() - S.openedAt < 12000 && (!S.chat || !S.chat.messages.length || S.chat.sessionId === S.openedFrom)) return note('等待聊天内容加载…');
+    if (S.openedAt && Date.now() - S.openedAt < 15000 && (!S.chat || !S.chat.messages.length || S.chat.sessionId === S.openedFrom)) { toMain('tick'); return note('等待聊天内容和简历加载…'); }
     const idle = Math.ceil((20000 - (Date.now() - S.userAt)) / 1000);
     if (idle > 0) return note(`你正在操作页面，${idle} 秒后继续巡检`);
     const waitingOnYou = S.draft && !S.draft.sentAuto && S.decision?.mode !== 'auto';
@@ -638,6 +638,9 @@
     }
     if (d.type === 'chat') {
       const changed = !S.chat || S.chat.sessionId !== d.data.sessionId;
+      // the resume turned up after the reply was drafted (and it is not sent yet): judge again with it
+      const lateResume = !changed && d.data.profile && !S.chat.profile && chatSig(d.data) === S.lastSuggestSig && !S.sending && !(S.draft && S.draft.sentAuto)
+        && d.data.messages.length && d.data.messages[d.data.messages.length - 1].dir === 'in';
       if (S.pending && chatSig(d.data) !== S.pending.sig) {
         if (changed) addTodo('semi', '自动回复被打断（切换了会话）');
         S.pending = null;
@@ -650,7 +653,8 @@
         api('/ext/chat/phones', { platform: PLATFORM, sessionId: d.data.sessionId, uid: d.data.uid, name: d.data.name, job: d.data.job, phones: d.data.phones });
       }
       if (changed) { S.draft = null; S.decision = null; S.chatMode = null; S.candidateId = null; S.screen = null; }
-      suggest(false);
+      if (lateResume) { S.pending = null; log(`${d.data.name || ''}：读到简历了，按简历重新判断`); suggest(true); }
+      else suggest(false);
     }
     if (d.type === 'actionResult') log(d.data.msg);
     if (d.type === 'risk' && !S.risk) { S.risk = true; S.stop = true; S.pending = null; log('检测到平台风控提示，已停止'); draw(); }
@@ -722,7 +726,7 @@
     draw();
   });
   // the background wakes the 消息 page every minute (its own timers are throttled while the tab is in the background)
-  chrome.runtime.onMessage.addListener(m => { if (m?.type === 'wake' && isIm() && !S.dead) { patrol(); if (Date.now() - (S.pingAt || 0) > 50000) { S.pingAt = Date.now(); ping(); } } });
+  chrome.runtime.onMessage.addListener(m => { if (m?.type === 'wake' && isIm() && !S.dead) { toMain('tick'); patrol(); if (Date.now() - (S.pingAt || 0) > 50000) { S.pingAt = Date.now(); ping(); } } });
   ping(); setInterval(ping, 60000);
   draw();
 })();

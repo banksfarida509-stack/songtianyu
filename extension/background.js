@@ -70,7 +70,8 @@ async function keepIm(focusPlatform) {
 }
 // create the alarm only once: re-creating it on every service-worker start would reset its
 // timer, and the worker restarts more often than once a minute while pages are pinging
-chrome.alarms.get('keepIm').then(a => { if (!a) chrome.alarms.create('keepIm', { periodInMinutes: 1 }); });
+// every 30 s (the shortest Chrome allows): a background tab's own timers run only about once a minute
+chrome.alarms.get('keepIm').then(a => { if (!a || a.periodInMinutes !== 0.5) chrome.alarms.create('keepIm', { periodInMinutes: 0.5 }); });
 chrome.alarms.onAlarm.addListener(a => { if (a.name === 'keepIm') keepIm(); });
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {

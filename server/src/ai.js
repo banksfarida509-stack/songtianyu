@@ -197,8 +197,13 @@ export async function suggestReply(candidate, history, ctx) {
   const firstReply = firstIn >= 0 && !history.slice(firstIn + 1).some(m => m.dir === 'out' && !m.tpl);
   const origin = ctx.origin || 'unknown';
   const verdict = candidate.verdict || null;
+  // an applicant judged 不推荐 after our first reply (the resume was read later): decline at the next
+  // reply — unless someone on our side has written in this chat, an interview is booked, or it ended already
+  const humanTalked = history.some(m => m.dir === 'out' && m.human);
+  const lateDecline = !firstReply && origin === 'applied' && verdict === '不推荐' && !humanTalked && !ctx.appt
+    && !['不合适', '不来', '待排程', '待确认', '确认参加'].includes(candidate.attend);
   const scenario = firstReply && origin === 'applied'
-    ? `投递-${verdict === '推荐' ? '符合' : verdict === '不推荐' ? '不符合' : '待确认'}` : null;
+    ? `投递-${verdict === '推荐' ? '符合' : verdict === '不推荐' ? '不符合' : '待确认'}` : lateDecline ? '投递-不符合' : null;
   const offerTxt = (ctx.offer || []).map(o => `${o.date === tomorrow ? '明天' : o.date.slice(5)}${o.slot < '12:00' ? '上午' : '下午'} ${o.slot}`).join(' 或 ');
   const pb = settings.playbook?.enabled !== false && settings.playbook?.text ? clip(settings.playbook.text, 1800) : '';
   const situation = [
@@ -221,13 +226,15 @@ export async function suggestReply(candidate, history, ctx) {
     : `附件简历：${hasResumeCard ? '已经收到' : resumeStatus}，不要再要简历。`;
   const pace = `沟通节奏：先寒暄、了解情况，再介绍和邀约。还没了解的：${toAsk.join('、') || '（都已了解）'}。每条消息最多问一个问题，已经知道的不要再问。对方提出问题时先认真回答，再顺带问下一个。`
     + `已经聊了 ${rounds} 轮；当对方表现出意向，或基本情况已了解大半（或已聊到第 3 轮以上）时，就主动邀约初试，给出上面的时间选项。`;
+  // applicants who fit: answer what they asked first (from the school's facts), then move things on
+  const answerFirst = '对方投递时如果问了问题（薪资、上课时间、地点、岗位内容等），先用下面的学校资料具体回答；资料里没有的说“这个我核实一下，晚点回复你”。没提问的，可以从学校资料里挑一个和对方最相关的岗位亮点简单说一句。';
   const scenarioRule = scenario === '投递-符合'
-    ? `本次场景：候选人主动投递且符合要求，这是第一条回复。先感谢投递、简单寒暄，说一句简历挺合适，然后问一个问题了解情况（优先问“${toAsk[0] || '最快什么时候能到岗'}”）。这一条先不要急着约时间。${pace}`
+    ? `本次场景：候选人主动投递，简历看过了，符合要求，这是第一条回复。先感谢投递，说一句简历挺合适；${answerFirst}然后问一个问题了解情况（优先问“${toAsk[0] || '最快什么时候能到岗'}”）。这一条先不要急着约时间。${pace}`
     : verdict === '推荐' ? `这位候选人初筛符合要求。${pace}`
     : scenario === '投递-不符合'
-      ? '本次场景：候选人主动投递但不符合要求。礼貌婉拒：感谢关注和投递，说明这个岗位目前和你的情况不太匹配，祝求职顺利；不要说具体原因（尤其不提年龄、性别等），不要邀约，不要留后续承诺。'
+      ? `本次场景：候选人主动投递，看过简历后不符合要求${lateDecline ? '（之前已经聊过几句，这次看完简历再回复）' : ''}。礼貌婉拒：感谢关注和投递；对方这次问了问题的，先简单回应一句；说明这个岗位目前和你的情况不太匹配，祝求职顺利。不要说具体原因（尤其不提年龄、性别、学历性质等），不要邀约，不要留后续承诺。`
       : scenario === '投递-待确认'
-        ? `本次场景：候选人主动投递，但简历信息不全。感谢投递，简单寒暄，问一个基本情况（优先问“${toAsk[0] || '什么时候可以开始工作'}”），表达有意向就安排面试。${pace}`
+        ? `本次场景：候选人主动投递，但简历信息不全。感谢投递；${answerFirst}然后问一个基本情况（优先问“${toAsk[0] || '什么时候可以开始工作'}”），表达有意向就安排面试。${pace}`
         : `对方表现出意向（愿意、可以、感兴趣、问面试 / 流程）而还没约时间时，要主动邀约，直接给出上面的时间选项让对方选；对方犹豫时先解答顾虑，再邀约一次。${pace}`;
   let ai = null, model = null, err = null;
   if (llmConfigured() && settings.ai.enabled) {

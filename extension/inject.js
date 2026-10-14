@@ -199,21 +199,37 @@
     for (const m of tl) if (m && m.flow === 'in' && m.type !== 'text') for (const k of ['custom', 'content', 'attach', 'pushPayload']) walk(m[k], 0, false);
     return [...out].slice(0, 3);
   }
+  // 智联 keeps the open conversation's resume in im.activeResume (loaded after the messages)
+  function activeResumeOf(st, sess) {
+    const r = st && st.activeResume;
+    if (!r || typeof r !== 'object' || st.activeResumeLoading) return null;
+    const uid = sess.resumeNumber || '';
+    const found = looksResume(r) ? r : findResume(r, uid);
+    if (!found || (uid && found.resumeNumber && found.resumeNumber !== uid)) return null;
+    return { ...pick(found), resumeNumber: found.resumeNumber || uid };
+  }
   let lastChatSig = '';
-  const profileCache = new Map();
+  const profileCache = new Map(), activeSince = new Map(), postedProfile = new Set();
   function readChat() {
     const st = rootVm()?.$store?.state?.im;
     if (!st || !st.activeSessionId) return;
-    const sess = st.currentSession || sessionsOf(st).find(s => sessId(s) === st.activeSessionId) || {};
-    const tl = (st.timelineMap?.[st.activeSessionId]?.timeline) || [];
+    const id = st.activeSessionId;
+    if (!activeSince.has(id)) activeSince.set(id, Date.now());
+    const sess = st.currentSession || sessionsOf(st).find(s => sessId(s) === id) || {};
+    const tl = (st.timelineMap?.[id]?.timeline) || [];
     const msgs = toMsgs(tl, 30);
-    const sig = st.activeSessionId + ':' + (msgs.length ? msgs[msgs.length - 1].id : '');
-    if (sig === lastChatSig) return;
+    const sig = id + ':' + (msgs.length ? msgs[msgs.length - 1].id : '');
+    // the resume shows up after the messages: keep looking until found
+    if (!profileCache.get(id)) { try { const p = activeResumeOf(st, sess) || resumeFor(sess); if (p) profileCache.set(id, p); } catch { /* try again next time */ } }
+    const profile = profileCache.get(id) || null;
+    // posted already, unless the resume has turned up since
+    if (sig === lastChatSig && (!profile || postedProfile.has(id))) return;
+    // give the resume up to 8 s, so the AI judges 合适 / 不合适 with it
+    if (!profile && msgs.length && Date.now() - activeSince.get(id) < 8000) return;
     lastChatSig = sig;
-    // the resume panel may render after the messages; retry until found
-    if (!profileCache.get(st.activeSessionId)) { try { profileCache.set(st.activeSessionId, resumeFor(sess)); } catch { /* try again next time */ } }
+    if (profile) postedProfile.add(id);
     post('chat', { sessionId: st.activeSessionId, uid: sess.resumeNumber || '', name: nameOf(sess), job: sess.jobTitle || '', state: sess.candidateState || '',
-      origin: originOf(tl), profile: profileCache.get(st.activeSessionId), phones: phonesOf(sess, tl), messages: msgs });
+      origin: originOf(tl), profile, phones: phonesOf(sess, tl), messages: msgs });
   }
 
   // ---------- actions (only on explicit request from the recruiter) ----------
@@ -786,6 +802,8 @@
       more && more.click();
     }
     if (d.type === 'reread') { lastSig = ''; lastChatSig = ''; tick(); }
+    // woken by the extension (timers in a background tab run only about once a minute)
+    if (d.type === 'tick') tick();
   });
 
   let n = 0;
