@@ -380,7 +380,11 @@ route('POST', '/api/ext/screen', 'ext', async (req, res) => {
     const sc = screenFor(n, b.job, ex);
     const c = upsertScreened(platform, clip(b.job, 40) || null, n, sc, platform === 'zhaopin' ? '智联 推荐列表' : 'BOSS');
     if (n.phone) savePhone(c, n.phone, '简历');
-    out.push({ uid: n.uid, id: c.id, verdict: c.verdict, score: c.score, reason: c.reason, reasonBy: c.reason_by, attend: c.attend });
+    // someone on the team already talked to this person: the platform says so on the card, or our
+    // records have a greeting / messages (e.g. a colleague's extension). Greeted last, see greetLoop.
+    const talked = ex && (ex.greeted_ms || db.prepare('SELECT 1 FROM messages WHERE candidate_id=? LIMIT 1').get(ex.id));
+    const peer = clip(raw.peerChat, 30) || (talked ? '系统里已有沟通记录' : '');
+    out.push({ uid: n.uid, id: c.id, verdict: c.verdict, score: c.score, reason: c.reason, reasonBy: c.reason_by, attend: c.attend, peer });
   }
   send(res, 200, { results: out, role: { key: role.key, name: role.name } });
 });

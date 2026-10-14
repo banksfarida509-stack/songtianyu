@@ -95,7 +95,8 @@
   window.addEventListener('resize', () => placePanel());
 
   function rank() {
-    return Object.entries(S.results).map(([uid, r]) => ({ uid, ...r })).filter(r => r.verdict === '推荐').sort((a, b) => b.score - a.score);
+    // people no colleague has talked to come first; those a colleague already talked to go last
+    return Object.entries(S.results).map(([uid, r]) => ({ uid, ...r })).filter(r => r.verdict === '推荐').sort((a, b) => (!!a.peer - !!b.peer) || b.score - a.score);
   }
   function draw() {
     if (S.dead) return;
@@ -137,13 +138,13 @@
     let b = '';
     if (S.imAlive === false) b += `<div class="hra-err">自动回复没有运行：${SITE}「消息」页没有打开，候选人的消息不会被回复。<button class="hra-btn sm" data-a="open-im">打开消息页</button></div>`;
     b += `<div class="hra-stats"><div><b>${all.length}</b>已初筛</div><div><b>${n('推荐')}</b>推荐</div><div><b>${n('待确认')}</b>待确认</div><div><b>${n('不推荐')}</b>不推荐</div></div>`;
-    b += `<div class="hra-sub">推荐顺序（${esc(S.job || '当前岗位')}${S.roleName ? ` · 按${esc(S.roleName)}岗规则初筛` : ''}）</div><div class="hra-rank">${rk.length ? rk.slice(0, 12).map(r => `<div class="hra-ri" data-uid="${esc(r.uid)}"><b>${r.score}</b><span>${esc(r.name || '')}<i>${esc(r.reason || '')}</i></span><em>${r.greeted ? '已打招呼' : ''}</em></div>`).join('') : '<p class="hra-muted">暂无推荐的人。滚动页面加载更多，插件会自动读取。</p>'}</div>`;
+    b += `<div class="hra-sub">推荐顺序（${esc(S.job || '当前岗位')}${S.roleName ? ` · 按${esc(S.roleName)}岗规则初筛` : ''}）</div><div class="hra-rank">${rk.length ? rk.slice(0, 12).map(r => `<div class="hra-ri" data-uid="${esc(r.uid)}"><b>${r.score}</b><span>${esc(r.name || '')}<i>${esc(r.reason || '')}</i></span><em>${r.greeted ? '已打招呼' : r.peer ? '同事聊过' : ''}</em></div>`).join('') : '<p class="hra-muted">暂无推荐的人。滚动页面加载更多，插件会自动读取。</p>'}</div>`;
     const q = S.quota;
     const qTxt = q ? `今日${esc(q.roleName)}岗已打 ${q.used} / ${q.cap}` : '';
     b += S.greeting
       ? `<p class="hra-muted">正在${S.cont ? '持续' : ''}打招呼：本次 ${S.done}${S.cont ? '' : ` / ${S.target}`}${qTxt ? ` · ${qTxt}` : ''}${S.phase ? ' · ' + esc(S.phase) : ''}</p><button class="hra-btn" data-a="stop">停止打招呼</button>`
       : S.confirmGreet
-        ? `<p class="hra-muted">按 AI 推荐顺序打招呼，当前页推荐 ${rk.filter(r => !r.greeted).length} 位未打招呼；不够时自动往下加载更多。会消耗平台打招呼次数。${qTxt ? `<br><b>${qTxt}</b>（上限在后台“设置 → 推荐页打招呼”修改）` : ''}</p>
+        ? `<p class="hra-muted">按 AI 推荐顺序打招呼，当前页推荐 ${rk.filter(r => !r.greeted).length} 位未打招呼${rk.some(r => !r.greeted && r.peer) ? `（其中 ${rk.filter(r => !r.greeted && r.peer).length} 位同事聊过）` : ''}；先打同事没聊过的，不够时自动往下加载更多，实在没有了再打同事聊过的。会消耗平台打招呼次数。${qTxt ? `<br><b>${qTxt}</b>（上限在后台“设置 → 推荐页打招呼”修改）` : ''}</p>
            <div class="hra-row"><label class="hra-muted"><input type="checkbox" id="hra-cont" ${S.cont ? 'checked' : ''}> 持续打到今日上限（页面刷新后自动继续）</label></div>
            ${S.cont ? '' : `<div class="hra-row"><label class="hra-muted">本次打 <input id="hra-n" type="number" min="1" max="100" value="${S.target || 10}" style="width:56px"> 位</label></div>`}
            <div class="hra-muted">每位间隔</div><div class="hra-seg">${GAPS.map(([lo, hi], i) => `<button data-a="gap:${i}" class="${S.gap === i ? 'on' : ''}">${lo}–${hi} 秒</button>`).join('')}</div>
@@ -308,7 +309,7 @@
       let line = el.querySelector(':scope > .hra-line');
       if (!line) { line = document.createElement('div'); line.className = 'hra-line'; el.appendChild(line); }
       const cls = r.verdict === '推荐' ? 'ok' : r.verdict === '待确认' ? 'warn' : 'no';
-      const html = `<span class="hra-tag ${cls}">AI ${esc(r.verdict)}</span>${r.verdict !== '不推荐' ? `<b>${r.score} 分</b>` : ''}<span class="hra-why">${esc(r.reason)}</span>${r.reasonBy === 'ai' ? '<span class="hra-src">AI</span>' : ''}${r.greeted ? '<span class="hra-tag no">已打招呼</span>' : ''}`;
+      const html = `<span class="hra-tag ${cls}">AI ${esc(r.verdict)}</span>${r.verdict !== '不推荐' ? `<b>${r.score} 分</b>` : ''}<span class="hra-why">${esc(r.reason)}</span>${r.reasonBy === 'ai' ? '<span class="hra-src">AI</span>' : ''}${r.greeted ? '<span class="hra-tag no">已打招呼</span>' : ''}${r.peer && !r.greeted ? `<span class="hra-tag warn" title="${esc(r.peer)}">同事聊过 · 最后打</span>` : ''}`;
       if (line.innerHTML !== html) line.innerHTML = html;
       el.classList.toggle('hra-v-ok', cls === 'ok'); el.classList.toggle('hra-v-warn', cls === 'warn'); el.classList.toggle('hra-v-no', cls === 'no');
     }
@@ -351,7 +352,7 @@
     S.greeting = true; S.stop = false; S.done = 0; S.phase = ''; draw();
     if (S.cont) setGreetRun({ at: Date.now() });
     const skip = new Set();
-    let dry = 0, why = '', fails = 0, away = 0;
+    let dry = 0, why = '', fails = 0, away = 0, peerOk = false;
     const onPage = uid => !!document.querySelector(`[data-hra-uid="${CSS.escape(uid)}"]`);
     const goal = () => S.cont ? Infinity : S.target;
     while (S.done < goal() && !S.stop && !S.risk && !S.dead) {
@@ -365,9 +366,14 @@
         continue;
       }
       away = 0;
-      const r = rank().find(x => !x.greeted && !skip.has(x.uid) && onPage(x.uid));
+      // first only people no colleague has talked to; once the list (after loading more) has
+      // none of those left, the ones a colleague already talked to
+      const r = rank().find(x => !x.greeted && !skip.has(x.uid) && onPage(x.uid) && (peerOk || !x.peer));
       if (!r) {
-        if (++dry > 4) { why = '当前岗位已没有更多 AI 推荐的候选人'; break; }
+        if (++dry > 4) {
+          if (!peerOk && rank().some(x => !x.greeted && x.peer)) { peerOk = true; dry = 0; log('同事没聊过的推荐人选已打完，开始给同事聊过的人打招呼'); continue; }
+          why = '当前岗位已没有更多 AI 推荐的候选人'; break;
+        }
         S.phase = '加载更多候选人…'; draw();
         toMain('more');
         for (let t = 0; t < 6000 && !S.stop; t += 500) await sleep(500);

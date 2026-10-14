@@ -374,7 +374,12 @@
     }
     if (!uid && d) uid = strIn(d, /^(encryptGeekId|geekId|securityId|uid|encryptUid|expectId|lid)$/i);
     if (!uid) uid = 'h' + [...`${out.userName}|${out.age}|${out.educationLevel}|${out.workExperiences[0]?.companyName || ''}|${out.educationExperiences[0]?.schoolName || ''}`].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7).toString(36);
-    return { resumeNumber: `boss-${String(uid).replace(/^(boss-)+/, '')}`, ...out, fromVue: !!d };
+    // a colleague already talked to this person: the card data names them (mateName), or the card says so
+    const own = card.querySelector(':scope > .hra-line');
+    const peerTxt = (own ? text.replace(textOf(own), '') : text).match(/同事[^\n]{0,12}?(沟通|联系|聊过|打过招呼|招呼过|约面|邀约)[^\n]{0,6}/);
+    const mate = d ? strIn(d, /^mateName$/i) : '';
+    const peerChat = mate ? `同事${mate.slice(0, 12)}聊过` : peerTxt ? peerTxt[0].trim().slice(0, 30) : '';
+    return { resumeNumber: `boss-${String(uid).replace(/^(boss-)+/, '')}`, ...out, peerChat, fromVue: !!d };
   }
   function currentRecJob() {
     const docs = [document]; try { if (window.top !== window && window.top.document) docs.push(window.top.document); } catch { /* cross-origin */ }
@@ -435,6 +440,7 @@
       cardShape: shape(cards[0]), parentShape: shape(cards[0]?.parentElement),
       parsed: { n: parsed.length, name: has(p => p.userName), age: has(p => p.age), edu: has(p => p.educationLevel), work: has(p => p.workExperiences.length), school: has(p => p.educationExperiences.length), intent: has(p => p.intentText), fromVue: has(p => p.fromVue), uidHashed: has(p => /^boss-h/.test(p.resumeNumber)) },
       vueKeys: (() => { const d = cards[0] && vueData(cards[0]); return d ? Object.keys(d).slice(0, 40) : []; })(),
+      peer: { found: has(p => p.peerChat), sample: parsed.map(p => p.peerChat).filter(Boolean).slice(0, 5) },
     };
   }
 

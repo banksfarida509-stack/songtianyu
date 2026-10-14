@@ -42,6 +42,16 @@ ok(q.role === 'teacher' && q.cap === 100 && q.used === 0, '教师 counted separa
 const stats = await call('/stats');
 ok(stats.greetToday.zhaopin.xueguan === 2 && stats.imAlive.zhaopin === true && stats.greet.daily.xueguan === 2, 'dashboard shows counts and page status');
 
+// 同事聊过: from the card, or from our own records (an earlier greeting)
+const card = (id, peerChat) => ({ resumeNumber: id, userName: '测试' + id, age: '26', educationLevel: '本科', workYears: '2年', workExperiences: [{ companyName: '某中学', jobTitle: '数学教师' }], educationExperiences: [{ schoolName: '沈阳师范大学', majorName: '数学', educationLevel: '本科' }], peerChat });
+let sr = await call('/ext/screen', { body: { platform: 'zhaopin', job: '初中数学老师', cards: [card('P1', '同事王老师 3天前沟通过'), card('P2', ''), card('G1', '')] }, token });
+const by = Object.fromEntries(sr.results.map(x => [x.uid, x]));
+ok(by.P1.peer === '同事王老师 3天前沟通过', 'peer from the card');
+ok(by.P2.peer === '', 'no peer for a fresh candidate');
+await call('/ext/greeted', { body: { platform: 'zhaopin', uid: 'P2', name: '乙', job: '初中数学老师' }, token });
+sr = await call('/ext/screen', { body: { platform: 'zhaopin', job: '初中数学老师', cards: [card('P2', '')] }, token });
+ok(sr.results[0].peer === '系统里已有沟通记录', 'peer from our own greeting record');
+
 await call('/ext/diag', { body: { kind: 'greet', data: { end: '停止：测试' } }, token });
 const d = await call('/diag');
 ok(d.greet && d.greet.list.length === 1, 'greet stop report stored');

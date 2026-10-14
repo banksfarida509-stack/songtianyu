@@ -61,6 +61,23 @@
   }
 
   // ---------- recommend page ----------
+  // “a colleague already talked to this person”: a field on the candidate object whose name
+  // says so, or a label on the card such as “同事张三 3天前沟通过”
+  const PEER_KEY = /colleague|coworker|teammate|peerHr|otherHr|otherStaff|contactedBy|communicatedBy|chattedBy|^mate(Name|Id|Info)?$/i;
+  const PEER_TXT = /同事[^\n]{0,12}?(沟通|联系|聊过|打过招呼|招呼过|约面|邀约)[^\n]{0,6}/;
+  function peerOf(c, el) {
+    for (const [k, v] of Object.entries(c || {})) {
+      if (!PEER_KEY.test(k) || v == null || v === false || v === 0 || v === '') continue;
+      if (typeof v === 'string' && /^(0|false|null|undefined)$/i.test(v.trim())) continue;
+      if (Array.isArray(v) && !v.length) continue;
+      const nm = typeof v === 'string' ? v.trim() : v && typeof v === 'object' ? Object.values(v).find(x => typeof x === 'string' && /[一-龥]/.test(x)) : '';
+      return nm && nm.length <= 12 ? `同事${nm}聊过` : '同事聊过';
+    }
+    // card text without our own AI line (it may show “同事聊过” itself)
+    const own = el && el.querySelector(':scope > .hra-line');
+    const m = ((el && el.innerText) || '').replace(own ? own.innerText : '', '').match(PEER_TXT);
+    return m ? m[0].trim().slice(0, 30) : '';
+  }
   let lastSig = '';
   function readRecommend() {
     const els = [...document.querySelectorAll('.recommend-item__inner')];
@@ -70,7 +87,7 @@
       const c = vm && vm.$props.candidate;
       if (!c || !c.resumeNumber) continue;
       el.setAttribute('data-hra-uid', c.resumeNumber);
-      cards.push(pick(c));
+      cards.push({ ...pick(c), peerChat: peerOf(c, el) });
     }
     const sig = cards.map(c => c.resumeNumber).join(',');
     if (sig && sig !== lastSig) { lastSig = sig; post('recommend', { cards, job: currentJob() }); }
@@ -590,6 +607,20 @@
       unreadKeys: Object.keys(sessionsOf(st)[0] || {}).filter(k => /unread|read/i.test(k)),
       sessionRow: (() => { const s0 = sessionsOf(st)[0]; const el = s0 && sessionEl(s0); return el ? { tag: el.tagName, cls: String(el.className).slice(0, 80), vm: el.__vue__ ? vmName(el.__vue__) : '', methods: Object.keys(el.__vue__?.$options?.methods || {}).slice(0, 20) } : null; })(),
       quickButtons: [...document.querySelectorAll('button, .km-button')].filter(visible).map(b => (b.innerText || '').trim()).filter(t => t && t.length < 8).slice(0, 30),
+      // recommend page: field names of a card's candidate object and the short labels on cards
+      // (used to confirm how 智联 marks “a colleague already talked to this person”)
+      rec: (() => {
+        const els = [...document.querySelectorAll('.recommend-item__inner')].slice(0, 20);
+        if (!els.length) return null;
+        const c0 = cardVm(els[0])?.$props?.candidate || {};
+        const labels = new Set();
+        for (const el of els) for (const e of el.querySelectorAll('span, div, i, em, p')) {
+          const t = (e.children.length ? '' : (e.textContent || '').trim());
+          if (t && t.length <= 16 && /同事|沟通|联系|聊|招呼|查看|看过|浏览/.test(t)) labels.add(t);
+        }
+        return { candKeys: Object.keys(c0).slice(0, 120), peerKeys: Object.fromEntries(Object.entries(c0).filter(([k]) => PEER_KEY.test(k)).map(([k, v]) => [k, typeof v === 'object' ? shape(v) : String(v).slice(0, 20)])),
+          labels: [...labels].slice(0, 30), peerFound: els.filter(el => peerOf(cardVm(el)?.$props?.candidate, el)).length, cards: els.length };
+      })(),
     };
   }
 
