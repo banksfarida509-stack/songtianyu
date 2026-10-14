@@ -657,6 +657,7 @@
       else suggest(false);
     }
     if (d.type === 'actionResult') log(d.data.msg);
+    if (d.type === 'resumeShape') api('/ext/diag', { kind: 'resume', data: { version: VERSION, platform: PLATFORM, ...d.data } });
     if (d.type === 'risk' && !S.risk) { S.risk = true; S.stop = true; S.pending = null; log('检测到平台风控提示，已停止'); draw(); }
     if (d.type === 'error') console.debug('[hra]', d.data.msg);
   });

@@ -230,7 +230,7 @@ route('POST', '/api/ext/ping', 'ext', async (req, res) => {
 route('POST', '/api/ext/diag', 'ext', async (req, res) => {
   const b = await body(req);
   // chat / invite: 智联; boss / bossRec: BOSS直聘 chat / recommend; stall: self-check report when replies stop
-  const kind = ['chat', 'invite', 'boss', 'bossRec', 'rec', 'stall', 'greet'].includes(b.kind) ? b.kind : 'chat';
+  const kind = ['chat', 'invite', 'boss', 'bossRec', 'rec', 'stall', 'greet', 'resume'].includes(b.kind) ? b.kind : 'chat';
   const str = JSON.stringify(b.data ?? null);
   const entry = { at: nowCN(), data: str.length > 20000 ? { truncated: true, head: str.slice(0, 20000) } : b.data };
   if (kind === 'stall' || kind === 'greet') { const prev = getSetting(db, `diag_${kind}`); setSetting(db, `diag_${kind}`, { ...entry, list: [entry, ...((prev && prev.list) || [])].slice(0, 10) }); }
@@ -832,7 +832,7 @@ route('POST', '/api/kb/learn', 'admin', async (req, res) => {
   }
   send(res, 200, r);
 });
-route('GET', '/api/diag', 'admin', (req, res) => send(res, 200, Object.fromEntries(['chat', 'invite', 'boss', 'bossRec', 'rec', 'stall', 'greet'].map(k => [k, getSetting(db, `diag_${k}`)]))));
+route('GET', '/api/diag', 'admin', (req, res) => send(res, 200, Object.fromEntries(['chat', 'invite', 'boss', 'bossRec', 'rec', 'stall', 'greet', 'resume'].map(k => [k, getSetting(db, `diag_${k}`)]))));
 
 route('POST', '/api/settings/rotate-token', 'admin', (req, res) => { const t = randomToken(18); setSetting(db, 'ext_token', t); send(res, 200, { extToken: t }); });
 route('POST', '/api/settings/rescreen', 'admin', async (req, res) => {

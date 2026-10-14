@@ -208,8 +208,15 @@
     if (!found || (uid && found.resumeNumber && found.resumeNumber !== uid)) return null;
     return { ...pick(found), resumeNumber: found.resumeNumber || uid };
   }
-  let lastChatSig = '';
+  let lastChatSig = '', resumeShapeSent = false;
   const profileCache = new Map(), activeSince = new Map(), postedProfile = new Set();
+  // keys and value types of an object, a few levels deep (no values)
+  const shapeOf = (o, d = 0) => {
+    if (o == null || typeof o !== 'object') return typeof o;
+    if (d > 2) return Array.isArray(o) ? 'array' : 'object';
+    if (Array.isArray(o)) return o.length ? [shapeOf(o[0], d + 1)] : [];
+    return Object.fromEntries(Object.keys(o).slice(0, 80).map(k => [k, shapeOf(o[k], d + 1)]));
+  };
   function readChat() {
     const st = rootVm()?.$store?.state?.im;
     if (!st || !st.activeSessionId) return;
@@ -222,6 +229,11 @@
     // the resume shows up after the messages: keep looking until found
     if (!profileCache.get(id)) { try { const p = activeResumeOf(st, sess) || resumeFor(sess); if (p) profileCache.set(id, p); } catch { /* try again next time */ } }
     const profile = profileCache.get(id) || null;
+    // once per page load: report the field names / types (no values) of the first resume seen
+    if (!resumeShapeSent && st.activeResume && typeof st.activeResume === 'object') {
+      resumeShapeSent = true;
+      post('resumeShape', { shape: shapeOf(st.activeResume), picked: profile ? { edu: profile.educationLevel ? 'yes' : 'no', edus: (profile.educationExperiences || []).map(e => ({ deg: !!e.educationLevel, begin: !!e.beginDate, end: !!e.endDate, mode: !!e.mode })), age: profile.age != null, work: (profile.workExperiences || []).length } : null });
+    }
     // posted already, unless the resume has turned up since
     if (sig === lastChatSig && (!profile || postedProfile.has(id))) return;
     // give the resume up to 8 s, so the AI judges 合适 / 不合适 with it
