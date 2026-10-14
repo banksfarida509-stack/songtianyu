@@ -303,6 +303,8 @@ ${docText || '（无相关段落）'}
   let action = null, slot = null, handoff = false, handoffWhy = null, stateChange = null;
 
   if (intent === '投递-不符合') {
+    // the reply must actually decline (the model sometimes keeps chatting): otherwise use the standard wording
+    if (reply && !/不太匹配|不匹配|不太契合|不契合|不太合适|不合适|祝.{0,6}(顺利|找到|如意)/.test(reply)) reply = '';
     reply = reply || pick(['你好，谢谢你的投递和关注。这个岗位目前和你的情况不太匹配，这次先不安排面试了，祝你早日找到合适的工作。', '谢谢你投递我们学校。综合看了下，这个岗位暂时和你的背景不太契合，先不打扰了，祝求职顺利。']);
     stateChange = { attend: '不合适' };
   } else if (intent === '投递-符合') {

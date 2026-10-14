@@ -28,6 +28,7 @@ test('投递后先聊了几句，读到简历判不符合 → 下一条礼貌婉
   assert.equal(d.intent, '投递-不符合');
   assert.equal(d.stateChange.attend, '不合适');
   assert.doesNotMatch(d.reply, /专升本|学历/);
+  assert.match(d.reply, /不太匹配|不太契合/);
 });
 
 test('同事在会话里亲自聊过，或已约面试 → 不自动婉拒', async () => {
