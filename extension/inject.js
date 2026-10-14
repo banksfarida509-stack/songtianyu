@@ -85,9 +85,15 @@
   }
   // graduation year / label: a field whose name says so (智联 userGraduateDescription), else
   // “27届 / 2027年毕业” on the card, else 智联's in-school flag
+  // (智联: `graduates` holds “27年应届生”; userGraduateDescription is sometimes the work years, “10年”)
+  const GRAD_RE = /(?<!\d)(?:20)?\d{2}\s*(?:届|年毕业|年应届)/;
   function gradOf(c, el) {
-    for (const [k, v] of Object.entries(c || {})) if (/grad|graduat|biye/i.test(k) && (typeof v === 'string' || typeof v === 'number') && /\d{2}/.test(String(v))) return String(v).slice(0, 20);
-    const m = cardText(el).match(/(?<!\d)(?:20)?\d{2}\s*(?:届|年毕业|年应届)/);
+    const vals = Object.entries(c || {}).filter(([k, v]) => /grad|graduat|biye/i.test(k) && (typeof v === 'string' || typeof v === 'number')).map(([, v]) => String(v));
+    const labelled = vals.find(v => GRAD_RE.test(v));
+    if (labelled) return labelled.match(GRAD_RE)[0];
+    const dated = vals.find(v => /(?:19|20)\d{2}/.test(v));
+    if (dated) return dated.slice(0, 20);
+    const m = cardText(el).match(GRAD_RE);
     if (m) return m[0];
     return c && c.isSchoolResume === true ? '在校生' : '';
   }

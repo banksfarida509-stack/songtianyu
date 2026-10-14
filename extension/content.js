@@ -594,15 +594,19 @@
     if (S.busy) return note('AI 正在写回复…');
     if (S.pending) return note('等待自动发送当前回复');
     if (S.sending) return note('正在发送…');
+    // a conversation just opened whose messages are still loading: stay on it (up to 12 s), or it is skipped for good
+    if (S.openedAt && Date.now() - S.openedAt < 12000 && (!S.chat || !S.chat.messages.length || S.chat.sessionId === S.openedFrom)) return note('等待聊天内容加载…');
     const idle = Math.ceil((20000 - (Date.now() - S.userAt)) / 1000);
     if (idle > 0) return note(`你正在操作页面，${idle} 秒后继续巡检`);
     const waitingOnYou = S.draft && !S.draft.sentAuto && S.decision?.mode !== 'auto';
     const left = Math.ceil(((waitingOnYou ? 60000 : 6000) - (Date.now() - S.handledAt)) / 1000);
     if (left > 0) return note(waitingOnYou ? `当前会话的建议等你处理，${left} 秒后先去处理其他未读` : `${left} 秒后查找下一个未读会话`);
     note('正在查找未读会话…');
+    const from = S.chat ? S.chat.sessionId : null;
     const r = await callMain('nextUnread', { skip: S.scanSkip }, 'openResult', 30000);
+    if (r.ok) S.openedFrom = from;
     // watchdog input: unread shown on the page but none could be picked up
-    if (r.ok) { S.unreadStuckSince = 0; W.resets = 0; }
+    if (r.ok) { S.unreadStuckSince = 0; W.resets = 0; S.openedAt = Date.now(); }
     else if (r.none) { if ((r.badges || 0) > 0 || (r.unread || 0) > 0) S.unreadStuckSince = S.unreadStuckSince || Date.now(); else S.unreadStuckSince = 0; }
     if (r.ok) { log(r.msg); note(r.msg); }
     else if (r.failed && r.id) {
