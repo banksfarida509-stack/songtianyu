@@ -341,7 +341,7 @@
       out.workYearsLabel = strIn(d, /work(Year|Years)(Desc)?$|experience(Desc)?$/i);
       out.intentText = [strIn(d, /expect(Position|Job)?(Name)?$|positionName$/i), strIn(d, /expectLocation|city/i)].filter(Boolean).join(' ');
       out.workExperiences = arrIn(d, /company|brand/i).slice(0, 6).map(w => ({ companyName: strIn(w, /company|brand/i), jobTitle: strIn(w, /position|title|job/i), beginDate: strIn(w, /start|begin/i), endDate: strIn(w, /end/i) }));
-      out.educationExperiences = arrIn(d, /school/i).slice(0, 4).map(e => ({ schoolName: strIn(e, /school/i), majorName: strIn(e, /major/i), educationLevel: strIn(e, /degree|edu/i), mode: strIn(e, /type|mode|统招|tongzhao/i) }));
+      out.educationExperiences = arrIn(d, /school/i).slice(0, 4).map(e => ({ schoolName: strIn(e, /school/i), majorName: strIn(e, /major/i), educationLevel: strIn(e, /degree|edu/i), mode: strIn(e, /type|mode|统招|tongzhao/i), beginDate: strIn(e, /start|begin/i), endDate: strIn(e, /end/i) }));
     }
     // fill gaps from the card text: “25岁 | 3年 | 本科 | 离职-随时到岗”, “公司 · 职位”, “学校 · 专业 · 学历”
     if (!out.userName) out.userName = nameIn(lines.slice(0, 3).join(' '));
@@ -379,7 +379,9 @@
     const peerTxt = (own ? text.replace(textOf(own), '') : text).match(/同事[^\n]{0,12}?(沟通|联系|聊过|打过招呼|招呼过|约面|邀约)[^\n]{0,6}/);
     const mate = d ? strIn(d, /^mateName$/i) : '';
     const peerChat = mate ? `同事${mate.slice(0, 12)}聊过` : peerTxt ? peerTxt[0].trim().slice(0, 30) : '';
-    return { resumeNumber: `boss-${String(uid).replace(/^(boss-)+/, '')}`, ...out, peerChat, fromVue: !!d };
+    // graduation label on the card: “27届”, “2027年毕业”, “27年应届生”
+    const gradText = (text.match(/(?<!\d)(?:20)?\d{2}\s*(?:届|年毕业|年应届)/) || [''])[0];
+    return { resumeNumber: `boss-${String(uid).replace(/^(boss-)+/, '')}`, ...out, gradText, peerChat, fromVue: !!d };
   }
   function currentRecJob() {
     const docs = [document]; try { if (window.top !== window && window.top.document) docs.push(window.top.document); } catch { /* cross-origin */ }

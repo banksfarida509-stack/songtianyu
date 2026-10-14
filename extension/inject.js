@@ -78,6 +78,13 @@
     const m = ((el && el.innerText) || '').replace(own ? own.innerText : '', '').match(PEER_TXT);
     return m ? m[0].trim().slice(0, 30) : '';
   }
+  // graduation year / label: a field whose name says so, else “27届 / 2027年毕业” on the card
+  function gradOf(c, el) {
+    for (const [k, v] of Object.entries(c || {})) if (/grad|graduat|biye/i.test(k) && (typeof v === 'string' || typeof v === 'number') && /\d{2}/.test(String(v))) return String(v).slice(0, 20);
+    const own = el && el.querySelector(':scope > .hra-line');
+    const m = ((el && el.innerText) || '').replace(own ? own.innerText : '', '').match(/(?<!\d)(?:20)?\d{2}\s*(?:届|年毕业|年应届)/);
+    return m ? m[0] : '';
+  }
   let lastSig = '';
   function readRecommend() {
     const els = [...document.querySelectorAll('.recommend-item__inner')];
@@ -87,7 +94,7 @@
       const c = vm && vm.$props.candidate;
       if (!c || !c.resumeNumber) continue;
       el.setAttribute('data-hra-uid', c.resumeNumber);
-      cards.push({ ...pick(c), peerChat: peerOf(c, el) });
+      cards.push({ ...pick(c), peerChat: peerOf(c, el), gradText: gradOf(c, el) });
     }
     const sig = cards.map(c => c.resumeNumber).join(',');
     if (sig && sig !== lastSig) { lastSig = sig; post('recommend', { cards, job: currentJob() }); }

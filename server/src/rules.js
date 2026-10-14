@@ -33,6 +33,7 @@ export function normalizeZhaopin(raw) {
   const edus = (raw.educationExperiences || []).slice(0, 4).map(e => ({
     t: [e.beginDate, e.endDate].filter(Boolean).join('-'),
     school: clip(e.schoolName, 60), major: clip(e.majorName, 40), deg: clip(e.educationLevel, 10), tag: clip(e.schoolTag, 20), mode: clip(e.mode, 30),
+    begin: clip(e.beginDate, 20), end: clip(e.endDate, 20),
   }));
   const top = edus[0] || {};
   return {
@@ -54,7 +55,54 @@ export function normalizeZhaopin(raw) {
     certs: (raw.certificateNames || []).slice(0, 10).map(x => clip(x, 40)),
     self_eval: clip(raw.selfEvaluation, 400),
     phone: mobileIn(raw.phone),
+    grad: clip(raw.gradText, 20), // graduation label / field from the card (screening only, not stored)
   };
+}
+
+// usual length of study, to estimate graduation when an education entry ends “至今”
+const STUDY_YEARS = [['博士', 4], ['硕士', 3], ['本科', 4], ['大专', 3], ['专科', 3]];
+/**
+ * Graduation year: the latest end year among education entries; an entry still running
+ * (“至今”) ends start year + usual length; else a “27届 / 2027届” label in the
+ * resume text. null when unknown.
+ */
+export function gradYearOf(c) {
+  let best = null;
+  const take = y => { if (y && (best == null || y > best)) best = y; };
+  const yearIn = s => { const m = String(s || '').match(/(?:19|20)\d{2}/); return m ? Number(m[0]) : null; };
+  const study = e => (STUDY_YEARS.find(([k]) => String(e.deg || '').includes(k)) || [0, 4])[1];
+  for (const e of c.edus || []) {
+    if ('end' in e || 'begin' in e) {
+      // separate start / end (cards read since v0.9.3)
+      if (yearIn(e.end)) take(yearIn(e.end));
+      else if (/至今|今|在读/.test(e.end || '') && yearIn(e.begin)) take(yearIn(e.begin) + study(e));
+      continue;
+    }
+    // older rows: only “start-end” text; a single year without “至今” could be either, so it is skipped
+    const t = String(e.t || '');
+    const ys = (t.match(/(?:19|20)\d{2}/g) || []).map(Number);
+    if (/至今|今|在读/.test(t) && ys.length === 1) take(ys[0] + study(e));
+    else if (ys.length >= 2) take(Math.max(...ys));
+  }
+  if (best == null) take(yearIn(c.grad));
+  if (best == null) {
+    const m = `${c.grad || ''} ${c.years || ''} ${c.intent || ''} ${c.expect || ''} ${c.self_eval || ''}`.match(/(?<!\d)(20)?(\d{2})\s*(?:届|年毕业|年应届)/);
+    if (m) take(2000 + Number(m[2]));
+  }
+  return best;
+}
+/**
+ * Hard rule for every role: people graduating after `maxGradYear` (still at school) are
+ * 不推荐. Not widened by the AI notes review (rule G01 has hard: true).
+ */
+export function applyGradRule(sc, c, maxGradYear) {
+  const max = Number(maxGradYear);
+  if (!max) return sc;
+  const y = gradYearOf(c);
+  if (y == null) return sc;
+  const rule = { id: 'G01', name: `毕业年份 ${max} 年及以前`, ok: y <= max, ev: `${y} 年毕业`, hard: true };
+  if (y <= max) return { ...sc, rules: [...sc.rules, rule] };
+  return { ...sc, verdict: '不推荐', score: Math.min(sc.score, 40), rules: [...sc.rules, rule], reason: `${y} 年毕业（还在上学），只招 ${max} 年及以前毕业的`, gradFail: true };
 }
 
 export function screen(c, rules) {

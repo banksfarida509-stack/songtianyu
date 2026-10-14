@@ -544,6 +544,7 @@ async function vSettings(m) {
     <div class="card"><div class="card-h"><h3>初筛规则</h3></div><div class="card-b"><div class="grid-form">
       <label class="fi">年龄上限<input id="r-age" type="number" value="${esc(R.maxAge)}"></label>
       <label class="fi">最低学历<select id="r-edu">${['大专', '本科', '硕士'].map(x => `<option ${x === R.minEdu ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+      <label class="fi full">最晚毕业年份（所有岗位：这一年之后毕业、还在上学的一律不推荐；填 0 不限）<input id="r-grad" type="number" value="${esc(R.maxGradYear ?? 2026)}"></label>
       <label class="fi full">科目关键词（专业或职位命中任一即对口，用逗号分隔）<input id="r-kw" value="${esc(R.subjectKeywords.join('，'))}"></label>
       <label class="fi full">学校教学经历关键词（正则）<input id="r-sp" value="${esc(R.schoolPattern)}"></label>
       <label class="fi full">培训机构关键词（正则，只有这类经历判“待确认”）<input id="r-tp" value="${esc(R.trainingPattern)}"></label>
@@ -628,7 +629,7 @@ async function vSettings(m) {
   $('#rot').onclick = async () => { await api('/settings/rotate-token', { body: {} }); toast('令牌已更换，请重新下载插件'); vSettings(m); };
   $('#ai-save').onclick = () => save({ ai: { enabled: $('#ai-on').checked, provider: $('#ai-p').value.trim(), model: $('#ai-m').value.trim(), fallbackProvider: $('#ai-fp').value.trim(), fallbackModel: $('#ai-fm').value.trim() } });
   $('#ai-test').onclick = async () => { $('#ai-res').textContent = '测试中…'; const r = await api('/tools/llm-test', { body: {} }); $('#ai-res').innerHTML = r.ok ? `<b class="ok-dot">● 正常</b> ${esc(r.provider)}/${esc(r.model)} · ${r.ms} ms · “${esc(r.reply)}”` : `<b class="bad-dot">● 失败</b> ${esc(r.error)}`; };
-  $('#r-save').onclick = () => save({ rules: { maxAge: +$('#r-age').value, minEdu: $('#r-edu').value, subjectKeywords: list($('#r-kw').value), schoolPattern: $('#r-sp').value.trim(), trainingPattern: $('#r-tp').value.trim(),
+  $('#r-save').onclick = () => save({ rules: { maxAge: +$('#r-age').value, minEdu: $('#r-edu').value, maxGradYear: Math.max(0, parseInt($('#r-grad').value, 10) || 0), subjectKeywords: list($('#r-kw').value), schoolPattern: $('#r-sp').value.trim(), trainingPattern: $('#r-tp').value.trim(),
     intentTrack: $('#r-it').checked, intentMaxAge: +$('#r-ia').value || 30, intentMinEdu: $('#r-ie').value, intentKeywords: list($('#r-ik').value) } });
   // read every field from the page, so one card's save never reverts another card's edits
   const orgBody = () => ({ ...ORG, place: $('#o-place').value.trim(), persona: $('#o-persona').value.trim(),

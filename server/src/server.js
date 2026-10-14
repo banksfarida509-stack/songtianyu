@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { openDb, getSetting, setSetting, addEvent } from './db.js';
-import { normalizeZhaopin, screen, mobileIn } from './rules.js';
+import { normalizeZhaopin, screen, mobileIn, applyGradRule } from './rules.js';
 import { polishReasons, suggestReply, riskCheck, decideMode, guessTopic, reviewScreen, applyReview } from './ai.js';
 import { retrieve, kbStats, learnFromChats } from './kb.js';
 import { roleFor, screenRole, ROLE_KEYS, tongzhaoOf, eduSalesOf } from './roles.js';
@@ -121,7 +121,10 @@ const roleByKey = key => { const roles = getSetting(db, 'roles'); const k = role
 const roleForCand = (c, job) => (c && c.role_manual ? roleByKey(c.role) : roleOf(job || (c && c.job)));
 function screenFor(n, job, ex) {
   const role = roleForCand(ex, job);
-  const sc = { ...(role.key === 'teacher' ? screen(n, getSetting(db, 'rules')) : screenRole(n, role)), roleKey: role.key };
+  const rules = getSetting(db, 'rules');
+  // graduation year is a hard rule for every role (in-school students are not recruited)
+  const sc = applyGradRule({ ...(role.key === 'teacher' ? screen(n, rules) : screenRole(n, role)), roleKey: role.key }, n, rules.maxGradYear);
+  if (sc.gradFail) return sc;
   // keep an earlier AI review against the notes if the rule verdict and the notes are the same as then
   const prev = ex && j(ex.rules_json, []).find(r => r.id === 'AI');
   if (prev && prev.ruleVerdict === sc.verdict && prev.notesHash === notesHash(role.notes)) {
@@ -138,7 +141,9 @@ const summaryOf = c => `${c.age ?? '?'}岁 ${c.edu || ''} ${c.school || ''}${c.s
 async function reviewCandidates(rows, { includeRecommended = false } = {}) {
   const st = settingsAll(), roles = st.roles || {};
   const items = rows.map(c => { const key = c.role || roleFor(c.job, roles); return { c, key, role: roles[key] || {} }; })
-    .filter(x => (x.role.notes || '').trim() && (includeRecommended || x.c.verdict !== '推荐'));
+    .filter(x => (x.role.notes || '').trim() && (includeRecommended || x.c.verdict !== '推荐'))
+    // hard rules (graduation year) are never widened by the notes review
+    .filter(x => !j(x.c.rules_json, []).some(r => r.hard && r.ok === false));
   if (!items.length) return {};
   const out = {};
   for (let i = 0; i < items.length; i += 20) {

@@ -69,6 +69,8 @@ export const DEFAULT_SETTINGS = {
     intentMaxAge: 30,
     intentMinEdu: '本科',
     intentKeywords: ['教师', '教学', '老师', '助教', '讲师', '教研', '班主任'],
+    // 所有岗位：这一年之后毕业的（还在上学）一律不推荐；0 = 不限
+    maxGradYear: 2026,
   },
   schedule: {
     am: ['09:00', '09:30', '10:00', '10:30', '11:00'],
