@@ -18,7 +18,7 @@ chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
 // then refresh the recruiting tabs so the pages run the new scripts. If the version
 // is still old afterwards (loaded from a downloaded copy), the panel asks the
 // recruiter to download the new package instead.
-const RECRUIT_TABS = ['https://rd6.zhaopin.com/*', 'https://www.zhipin.com/*', 'https://zhipin.com/*'];
+const RECRUIT_TABS = ['https://rd6.zhaopin.com/*'];
 async function selfUpdate(target) {
   const { reloadFor, reloadAt } = await chrome.storage.local.get(['reloadFor', 'reloadAt']);
   if (reloadFor === target && Date.now() - (reloadAt || 0) < 6 * 3600e3) return false; // tried already for this version
@@ -60,7 +60,8 @@ async function keepIm(focusPlatform) {
   opening = true;
   try {
     const st = await chrome.storage.local.get(['keepIm', 'seen_zhaopin', 'seen_boss', 'opened_zhaopin', 'opened_boss']);
-    for (const p of ['zhaopin', 'boss']) {
+    // BOSS直聘 restricts web logins of accounts it sees using extensions: the extension no longer runs there (v0.9.13)
+    for (const p of ['zhaopin']) {
       const want = p === focusPlatform || (st.keepIm && Date.now() - (st[`seen_${p}`] || 0) < SEEN_FOR);
       if (!want) continue;
       let tabs = await imTabs(p);
