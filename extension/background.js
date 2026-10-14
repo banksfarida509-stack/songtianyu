@@ -44,17 +44,29 @@ const SEEN_FOR = 3 * 3600e3; // a platform counts as "in use" when one of its pa
 async function imTabs(p) {
   return (await chrome.tabs.query({ url: p === 'zhaopin' ? 'https://rd6.zhaopin.com/*' : ['https://www.zhipin.com/*', 'https://zhipin.com/*'] })).filter(t => isImUrl(p, t.url || t.pendingUrl));
 }
+// a BOSS tab outside the recruiter pages (login, home page, security check): the recruiter is
+// logged out or logging in. Opening 消息 pages then would stack up tabs that land on the login
+// page again, and a page loading mid-login can break the login, so wait until they are back in.
+const BOSS_IN = /^https:\/\/(www\.)?zhipin\.com\/web\/(chat|frame|boss)\//;
+async function loggingIn(p) {
+  if (p !== 'boss') return false;
+  const tabs = await chrome.tabs.query({ url: ['https://www.zhipin.com/*', 'https://zhipin.com/*'] });
+  return tabs.some(t => !BOSS_IN.test(t.url || t.pendingUrl || ''));
+}
+const REOPEN_GAP = 10 * 60e3; // open a missing 消息 page by itself at most once per 10 minutes
 let opening = false;
 async function keepIm(focusPlatform) {
   if (opening) return;
   opening = true;
   try {
-    const st = await chrome.storage.local.get(['keepIm', 'seen_zhaopin', 'seen_boss']);
+    const st = await chrome.storage.local.get(['keepIm', 'seen_zhaopin', 'seen_boss', 'opened_zhaopin', 'opened_boss']);
     for (const p of ['zhaopin', 'boss']) {
       const want = p === focusPlatform || (st.keepIm && Date.now() - (st[`seen_${p}`] || 0) < SEEN_FOR);
       if (!want) continue;
       let tabs = await imTabs(p);
       if (!tabs.length) {
+        if (p !== focusPlatform && (await loggingIn(p) || Date.now() - (st[`opened_${p}`] || 0) < REOPEN_GAP)) continue;
+        await chrome.storage.local.set({ [`opened_${p}`]: Date.now() });
         const t = await chrome.tabs.create({ url: IM_URL[p], pinned: true, active: p === focusPlatform });
         tabs = [t];
       } else if (p === focusPlatform) {
