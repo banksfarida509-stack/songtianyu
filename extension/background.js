@@ -1,5 +1,5 @@
-// Service worker: the only place that talks to the HR backend (keeps the token
-// out of the page). Content scripts send {type:'api', path, body}.
+// Service worker：唯一和后台服务器通信的地方（令牌不进页面）。content.js 发 {type:'api', path, body}。
+// v1.0 去掉了：自动打开并固定消息页、每 30 秒唤醒页面巡检、自动更新后刷新招聘页面。
 importScripts('config.js');
 
 async function conf() {
@@ -10,95 +10,17 @@ async function conf() {
   };
 }
 
-// toolbar icon → settings & knowledge base
+// 工具栏图标 → 设置与知识库
 chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
 
-// Version alignment. When the server ships a newer extension, reload the extension
-// from disk once (picks up new files when it was loaded from the project folder),
-// then refresh the recruiting tabs so the pages run the new scripts. If the version
-// is still old afterwards (loaded from a downloaded copy), the panel asks the
-// recruiter to download the new package instead.
-const RECRUIT_TABS = ['https://rd6.zhaopin.com/*'];
-async function selfUpdate(target) {
-  const { reloadFor, reloadAt } = await chrome.storage.local.get(['reloadFor', 'reloadAt']);
-  if (reloadFor === target && Date.now() - (reloadAt || 0) < 6 * 3600e3) return false; // tried already for this version
-  await chrome.storage.local.set({ reloadFor: target, reloadAt: Date.now(), refreshTabs: true });
-  setTimeout(() => chrome.runtime.reload(), 300);
-  return true;
-}
-chrome.runtime.onInstalled.addListener(async () => {
-  const { refreshTabs } = await chrome.storage.local.get('refreshTabs');
-  if (!refreshTabs) return;
-  await chrome.storage.local.set({ refreshTabs: false });
-  for (const t of await chrome.tabs.query({ url: RECRUIT_TABS })) chrome.tabs.reload(t.id);
-});
-
-// Keep a 消息 page open for each platform in use: auto replies, the unread patrol and
-// follow-ups only run on that page. Every minute: (re)open it as a pinned background tab
-// if it is missing, stop Chrome from discarding it, and wake its patrol (timers in
-// background tabs are throttled to about once a minute).
-const IM_URL = { zhaopin: 'https://rd6.zhaopin.com/app/im', boss: 'https://www.zhipin.com/web/chat/index' };
-const isImUrl = (p, u) => p === 'zhaopin' ? /^https:\/\/rd6\.zhaopin\.com\/app\/im/.test(u || '')
-  : /^https:\/\/(www\.)?zhipin\.com\/web\/chat\//.test(u || '') && !/recommend/.test(u || '');
-const SEEN_FOR = 3 * 3600e3; // a platform counts as "in use" when one of its pages pinged within 3 h
-async function imTabs(p) {
-  return (await chrome.tabs.query({ url: p === 'zhaopin' ? 'https://rd6.zhaopin.com/*' : ['https://www.zhipin.com/*', 'https://zhipin.com/*'] })).filter(t => isImUrl(p, t.url || t.pendingUrl));
-}
-// a BOSS tab outside the recruiter pages (login, home page, security check): the recruiter is
-// logged out or logging in. Opening 消息 pages then would stack up tabs that land on the login
-// page again, and a page loading mid-login can break the login, so wait until they are back in.
-const BOSS_IN = /^https:\/\/(www\.)?zhipin\.com\/web\/(chat|frame|boss)\//;
-async function loggingIn(p) {
-  if (p !== 'boss') return false;
-  const tabs = await chrome.tabs.query({ url: ['https://www.zhipin.com/*', 'https://zhipin.com/*'] });
-  return tabs.some(t => !BOSS_IN.test(t.url || t.pendingUrl || ''));
-}
-const REOPEN_GAP = 10 * 60e3; // open a missing 消息 page by itself at most once per 10 minutes
-let opening = false;
-async function keepIm(focusPlatform) {
-  if (opening) return;
-  opening = true;
-  try {
-    const st = await chrome.storage.local.get(['keepIm', 'seen_zhaopin', 'seen_boss', 'opened_zhaopin', 'opened_boss']);
-    // BOSS直聘 restricts web logins of accounts it sees using extensions: the extension no longer runs there (v0.9.13)
-    for (const p of ['zhaopin']) {
-      const want = p === focusPlatform || (st.keepIm && Date.now() - (st[`seen_${p}`] || 0) < SEEN_FOR);
-      if (!want) continue;
-      let tabs = await imTabs(p);
-      if (!tabs.length) {
-        if (p !== focusPlatform && (await loggingIn(p) || Date.now() - (st[`opened_${p}`] || 0) < REOPEN_GAP)) continue;
-        await chrome.storage.local.set({ [`opened_${p}`]: Date.now() });
-        const t = await chrome.tabs.create({ url: IM_URL[p], pinned: true, active: p === focusPlatform });
-        tabs = [t];
-      } else if (p === focusPlatform) {
-        await chrome.tabs.update(tabs[0].id, { active: true });
-        await chrome.windows.update(tabs[0].windowId, { focused: true });
-      }
-      for (const t of tabs) {
-        chrome.tabs.update(t.id, { autoDiscardable: false }).catch(() => {});
-        chrome.tabs.sendMessage(t.id, { type: 'wake' }).catch(() => {});
-      }
-    }
-  } catch (e) { console.warn('[hra] keepIm', e); } finally { opening = false; }
-}
-// create the alarm only once: re-creating it on every service-worker start would reset its
-// timer, and the worker restarts more often than once a minute while pages are pinging
-// every 30 s (the shortest Chrome allows): a background tab's own timers run only about once a minute
-chrome.alarms.get('keepIm').then(a => { if (!a || a.periodInMinutes !== 0.5) chrome.alarms.create('keepIm', { periodInMinutes: 0.5 }); });
-chrome.alarms.onAlarm.addListener(a => { if (a.name === 'keepIm') keepIm(); });
+// 旧版留下的定时器（keepIm）在升级后清掉
+chrome.runtime.onInstalled.addListener(() => { chrome.alarms?.clearAll?.(); });
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
-  // a recruiting page reports in (from its ping): remember the platform is in use and whether to keep its 消息 page
-  if (msg?.type === 'seen') {
-    const p = msg.platform === 'boss' ? 'boss' : 'zhaopin';
-    chrome.storage.local.set({ [`seen_${p}`]: Date.now(), keepIm: !!msg.keepIm }).then(() => { if (msg.keepIm) keepIm(); });
-    return;
-  }
-  if (msg?.type === 'openIm') { keepIm(msg.platform === 'boss' ? 'boss' : 'zhaopin'); return; }
   if (msg?.type === 'api') {
     (async () => {
       const c = await conf();
-      if (!c.server || !c.token) return reply({ error: '插件未配置服务器地址或令牌：请在后台“设置”页重新下载插件，或在插件选项里填写。' });
+      if (!c.server || !c.token) return reply({ error: '插件未配置服务器地址或令牌：请在插件选项里填写。' });
       try {
         const method = msg.method || 'POST';
         const r = await fetch(`${c.server}/api${msg.path}`, {
@@ -110,9 +32,8 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
         reply(r.ok ? { data } : { error: data.error || `服务器返回 ${r.status}` });
       } catch (e) { reply({ error: '连不上服务器：' + e.message }); }
     })();
-    return true; // async reply
+    return true; // 异步回复
   }
   if (msg?.type === 'openOptions') { chrome.runtime.openOptionsPage(); return; }
-  if (msg?.type === 'selfUpdate') { selfUpdate(String(msg.target || '')).then(started => reply({ started })); return true; }
   if (msg?.type === 'conf') { conf().then(c => reply({ server: c.server, hasToken: !!c.token })); return true; }
 });

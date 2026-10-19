@@ -823,35 +823,20 @@
     return /操作过于频繁|操作频繁|请完成安全验证|滑动验证|账号存在异常/.test(t.slice(0, 200000));
   }
 
+  // v1.0：只筛选 + 回复建议。页面上只接受下面这几种指令：
+  //   reread / tick  重新读取页面已加载的数据（只读）
+  //   diagnose       复制页面结构用于适配（只读）
+  //   fill           招聘方点了「填入输入框」：把建议写进输入框，由招聘方自己点「发送」
+  // 打招呼、发送、打开会话、加载更多、约面试弹窗、要简历、采集历史等会操作页面的指令一律拒绝，
+  // 对应的旧函数保留在文件里但不再被调用（旧版见 hragentOS_旧版v0.9.13_备份）。
+  const ALLOWED = new Set(['fill', 'diagnose', 'reread', 'tick']);
   window.addEventListener('message', e => {
     const d = e.data;
     if (!d || d.__hra !== 'iso' || e.source !== window) return;
+    if (!ALLOWED.has(d.type)) return post('actionResult', { ok: false, msg: `v1.0 不执行「${d.type}」：插件只做筛选和回复建议，平台上的操作请你自己完成` });
     if (d.type === 'fill') fill(d.text);
-    if (d.type === 'native') clickNative(d.name);
-    if (d.type === 'greet') greet(d.uid);
-    if (d.type === 'send') sendText(String(d.text || ''), d.reqId);
-    if (d.type === 'open') openSession(d.id, d.reqId);
-    if (d.type === 'nextUnread') nextUnread(d.reqId, d.skip);
-    if (d.type === 'history') collectHistory(d.reqId, d.max);
-    if (d.type === 'openBy') openBy(d.reqId, d);
-    if (d.type === 'askResume') askResume(d.reqId);
-    if (d.type === 'resetVisited') visited.clear();
-    if (d.type === 'readState') readState(d.reqId);
-    if (d.type === 'invite') sendInvite(d.reqId, d);
     if (d.type === 'diagnose') { let r; try { r = diagnose(); } catch (er) { r = { error: String(er && er.message || er) }; } post('diagResult', { reqId: d.reqId, ok: true, data: r }); }
-    if (d.type === 'historyStop') collecting = false;
-    if (d.type === 'more') {
-      // load the next batch of recommend cards (infinite scroll)
-      clickStay();
-      const els = document.querySelectorAll('.recommend-item__inner');
-      els.length && els[els.length - 1].scrollIntoView({ block: 'end' });
-      window.scrollBy(0, 2000);
-      document.querySelectorAll('*').forEach(e => { if (e.scrollHeight > e.clientHeight + 200 && /(auto|scroll)/.test(getComputedStyle(e).overflowY)) e.scrollTop = e.scrollHeight; });
-      const more = [...document.querySelectorAll('button, a, div, span')].find(e => visible(e) && e.children.length <= 1 && /^(加载更多|查看更多|换一批)$/.test((e.innerText || '').trim()));
-      more && more.click();
-    }
     if (d.type === 'reread') { lastSig = ''; lastChatSig = ''; tick(); }
-    // woken by the extension (timers in a background tab run only about once a minute)
     if (d.type === 'tick') tick();
   });
 

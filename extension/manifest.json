@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "AI 招聘副驾",
-  "version": "0.9.13",
-  "description": "在智联招聘页面内读取简历做 AI 初筛、批量打招呼，约聊消息按分类全自动回复或给出建议（全自动需在后台开启）。",
+  "name": "AI 招聘副驾（筛选与回复建议版）",
+  "version": "1.0.0",
+  "description": "在智联招聘页面内读取简历做 AI 初筛；候选人来消息时给出回复建议，由你确认后自己点发送。不打招呼、不自动发送。",
   "permissions": ["storage", "alarms"],
   "host_permissions": ["https://rd6.zhaopin.com/*", "http://*/*", "https://*/*"],
   "background": { "service_worker": "background.js" },
