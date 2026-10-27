@@ -1,15 +1,18 @@
 {
   "manifest_version": 3,
   "name": "AI 招聘副驾（筛选与回复建议版）",
-  "version": "1.0.0",
-  "description": "在智联招聘页面内读取简历做 AI 初筛；候选人来消息时给出回复建议，由你确认后自己点发送。不打招呼、不自动发送。",
-  "permissions": ["storage", "alarms"],
-  "host_permissions": ["https://rd6.zhaopin.com/*", "http://*/*", "https://*/*"],
+  "version": "1.2.2",
+  "description": "智联、BOSS直聘读取简历做 AI 初筛；候选人来消息时给出回复建议，你复制后自己粘贴、自己点发送。不打招呼、不自动发送、不往页面里填字、不调用平台接口。",
+  "permissions": ["storage", "alarms", "sidePanel"],
+  "host_permissions": ["https://rd6.zhaopin.com/*", "https://www.zhipin.com/*", "http://*/*", "https://*/*"],
   "background": { "service_worker": "background.js" },
   "content_scripts": [
     { "matches": ["https://rd6.zhaopin.com/*"], "js": ["inject.js"], "world": "MAIN", "run_at": "document_idle" },
-    { "matches": ["https://rd6.zhaopin.com/*"], "js": ["config.js", "content.js"], "css": ["content.css"], "run_at": "document_idle" }
+    { "matches": ["https://rd6.zhaopin.com/*"], "js": ["config.js", "content.js"], "css": ["content.css"], "run_at": "document_idle" },
+    { "matches": ["https://www.zhipin.com/web/*"], "js": ["boss-reader.js"], "all_frames": true, "run_at": "document_idle" }
   ],
-  "action": { "default_title": "AI 招聘副驾：设置与知识库" },
+  "side_panel": { "default_path": "sidepanel.html" },
+  "commands": { "open-panel": { "suggested_key": { "default": "Alt+J" }, "description": "打开 AI 招聘副驾侧边栏" } },
+  "action": { "default_title": "AI 招聘副驾：打开侧边栏（BOSS直聘结论在这里看）" },
   "options_page": "options.html"
 }

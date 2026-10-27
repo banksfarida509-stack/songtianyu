@@ -10,6 +10,7 @@ import { normalizeZhaopin, screen, mobileIn, applyGradRule } from './rules.js';
 import { polishReasons, suggestReply, riskCheck, decideMode, guessTopic, reviewScreen, applyReview } from './ai.js';
 import { retrieve, kbStats, learnFromChats } from './kb.js';
 import { roleFor, screenRole, ROLE_KEYS, tongzhaoOf, eduSalesOf } from './roles.js';
+import { screenCriteria, fullCriteria, ITEMS as CRITERIA_ITEMS } from './criteria.js';
 import { dueList, dueKind, convState, markFollowup, followupText } from './followup.js';
 import { llmConfigured, chat } from './llm.js';
 import { findSlot, book, autoSchedule, interviewerStatus, workDays, activeAppt, halfOf } from './schedule.js';
@@ -123,14 +124,19 @@ function screenFor(n, job, ex, roleKey) {
   // a role chosen on the recommend page wins; else one set by hand on the candidate; else the job title
   const role = roleKey && ROLE_KEYS.includes(roleKey) ? roleByKey(roleKey) : roleForCand(ex, job);
   const rules = getSetting(db, 'rules');
-  // graduation year is a hard rule for every role (in-school students are not recruited)
-  const sc = applyGradRule({ ...(role.key === 'teacher' ? screen(n, rules) : screenRole(n, role)), roleKey: role.key }, n, rules.maxGradYear);
+  // 后台保存过的岗位筛选标准：结论完全按它（毕业年份也在里面）；没保存过的岗位仍走旧规则
+  const sc = role.criteria && role.criteria.enabled !== false
+    ? { ...screenCriteria(n, fullCriteria(role.key, role, rules)), roleKey: role.key }
+    // graduation year is a hard rule for every role (in-school students are not recruited)
+    : applyGradRule({ ...(role.key === 'teacher' ? screen(n, rules) : screenRole(n, role)), roleKey: role.key }, n, rules.maxGradYear);
   // a failed hard rule (graduation year, education) decides; an earlier AI widening does not survive it
   if (sc.rules.some(r => r.hard && r.ok === false)) return sc;
   // keep an earlier AI review against the notes if the rule verdict and the notes are the same as then
   const prev = ex && j(ex.rules_json, []).find(r => r.id === 'AI');
   if (prev && prev.ruleVerdict === sc.verdict && prev.notesHash === notesHash(role.notes)) {
-    return { ...sc, verdict: ex.verdict, score: ex.score, reason: ex.reason, rules: [...sc.rules, prev], keepAi: true };
+    const std = sc.rules.find(r => r.id === 'S' && Number.isFinite(r.raw));
+    const score = std ? (ex.verdict === '不推荐' ? Math.min(std.raw, 40) : std.raw) : ex.score;
+    return { ...sc, verdict: ex.verdict, score, reason: ex.reason, rules: [...sc.rules, prev], keepAi: true };
   }
   return sc;
 }
@@ -159,7 +165,9 @@ async function reviewCandidates(rows, { includeRecommended = false } = {}) {
       if (!p) continue;
       const v = applyReview(x.c.verdict, p.verdict);
       const usedNote = !!p.basis && !/^规则/.test(p.basis);
-      const score = v === x.c.verdict ? x.c.score : v === '推荐' ? Math.max(x.c.score || 0, 70) : Math.max(Math.min(x.c.score || 50, 69), 50);
+      // 教师岗按赋分标准打分：AI 只改结论，分数用标准算出的分（不封顶 40 的原始分）
+      const std = j(x.c.rules_json, []).find(r => r.id === 'S' && Number.isFinite(r.raw));
+      const score = v === x.c.verdict ? x.c.score : std ? std.raw : v === '推荐' ? Math.max(x.c.score || 0, 70) : Math.max(Math.min(x.c.score || 50, 69), 50);
       const reason = p.reason ? `${p.reason}${v !== x.c.verdict && usedNote ? '（按岗位备注）' : ''}` : x.c.reason;
       const rules = j(x.c.rules_json, []).filter(r => r.id !== 'AI');
       rules.push({ id: 'AI', name: '按岗位备注复核', ok: v === '推荐' ? true : v === '不推荐' ? false : null, ev: usedNote ? p.basis : '备注不适用，维持规则结论', ruleVerdict: x.c.verdict, notesHash: notesHash(x.role.notes) });
@@ -811,7 +819,13 @@ route('PATCH', '/api/interviewers/:id', 'admin', async (req, res, p) => {
 });
 
 // settings
-route('GET', '/api/settings', 'admin', (req, res) => send(res, 200, { ...settingsAll(), extToken: getSetting(db, 'ext_token'), ext: getSetting(db, 'ext_last'), extPages: extPages(), imAlive: imAlive(), greetToday: greetToday(), llm: llmConfigured() }));
+// 后台「筛选标准」编辑器要的：可选项清单 + 每个岗位当前的标准（没保存过的按旧规则换算预填）
+const criteriaView = () => {
+  const roles = getSetting(db, 'roles'), rules = getSetting(db, 'rules');
+  return { items: CRITERIA_ITEMS.map(({ key, group, label, params }) => ({ key, group, label, params })),
+    byRole: Object.fromEntries(Object.keys(roles).map(k => [k, fullCriteria(k, roles[k], rules)])) };
+};
+route('GET', '/api/settings', 'admin', (req, res) => send(res, 200, { ...settingsAll(), criteria: criteriaView(), extToken: getSetting(db, 'ext_token'), ext: getSetting(db, 'ext_last'), extPages: extPages(), imAlive: imAlive(), greetToday: greetToday(), llm: llmConfigured() }));
 route('PUT', '/api/settings', 'admin', async (req, res) => {
   const b = await body(req);
   for (const k of ['org', 'rules', 'schedule', 'ai', 'kb', 'autoReply', 'playbook', 'roles', 'greet']) if (b[k] !== undefined) setSetting(db, k, b[k]);
@@ -859,12 +873,29 @@ route('POST', '/api/kb/learn', 'admin', async (req, res) => {
 route('GET', '/api/diag', 'admin', (req, res) => send(res, 200, { ...Object.fromEntries(['chat', 'invite', 'boss', 'bossRec', 'rec', 'stall', 'greet', 'resume', 'logout'].map(k => [k, getSetting(db, `diag_${k}`)])), live: liveList() }));
 
 route('POST', '/api/settings/rotate-token', 'admin', (req, res) => { const t = randomToken(18); setSetting(db, 'ext_token', t); send(res, 200, { extToken: t }); });
+// a stored candidate row → the shape screening reads
+const normOfRow = c => ({ uid: c.uid, name: c.name, gender: c.gender, age: c.age, edu: c.edu, school: c.school, school_tag: c.school_tag, major: c.major, years: c.years,
+  career_status: c.career_status, expect: c.expect, self_eval: c.self_eval,
+  work: j(c.work_json, []), edus: j(c.edu_json, []), skills: j(c.skills_json, []), certs: j(c.certs_json, []) });
+// 试算：用后台还没保存的筛选标准，把这个岗位库里的人重新判一遍（只算，不写库，不调 AI）
+route('POST', '/api/settings/criteria-preview', 'admin', async (req, res) => {
+  const b = await body(req);
+  const roles = getSetting(db, 'roles'), key = ROLE_KEYS.includes(b.role) ? b.role : 'teacher';
+  const cr = fullCriteria(key, { ...roles[key], criteria: b.criteria }, getSetting(db, 'rules'));
+  const count = { 推荐: 0, 待确认: 0, 不推荐: 0 }, changed = [];
+  let n = 0;
+  for (const c of db.prepare("SELECT * FROM candidates WHERE work_json IS NOT NULL AND is_demo=0 ORDER BY updated_at DESC LIMIT 2000").all()) {
+    if ((c.role || 'teacher') !== key) continue;
+    const sc = screenCriteria(normOfRow(c), cr);
+    count[sc.verdict]++; n++;
+    if (sc.verdict !== c.verdict && changed.length < 30) changed.push({ id: c.id, name: c.name, age: c.age, edu: c.edu, from: c.verdict, to: sc.verdict, reason: sc.reason });
+  }
+  send(res, 200, { total: n, count, changed });
+});
 route('POST', '/api/settings/rescreen', 'admin', async (req, res) => {
   let n = 0;
   for (const c of db.prepare("SELECT * FROM candidates WHERE work_json IS NOT NULL").all()) {
-    const norm = { uid: c.uid, name: c.name, age: c.age, edu: c.edu, school: c.school, school_tag: c.school_tag, major: c.major, years: c.years, expect: c.expect,
-      work: j(c.work_json, []), edus: j(c.edu_json, []), skills: j(c.skills_json, []), certs: j(c.certs_json, []) };
-    const sc = screenFor(norm, c.job, c);
+    const sc = screenFor(normOfRow(c), c.job, c);
     db.prepare('UPDATE candidates SET role=? WHERE id=?').run(sc.roleKey, c.id);
     db.prepare("UPDATE candidates SET verdict=?, score=?, rules_json=?, reason=CASE WHEN reason_by='staff' THEN reason ELSE ? END, reason_by=CASE WHEN reason_by='staff' THEN 'staff' WHEN ? THEN 'ai' ELSE 'rule' END WHERE id=?")
       .run(sc.verdict, sc.score, s(sc.rules), sc.reason, sc.keepAi ? 1 : 0, c.id); n++;

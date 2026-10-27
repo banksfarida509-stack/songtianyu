@@ -2,12 +2,14 @@
 // same message protocol as inject.js, so content.js works unchanged.
 // The page structure has not been verified yet, so everything here is read from the
 // DOM with generic rules (message rows, input box, send button, red badges) and a
-// diagnostics report helps tune it. It makes no network requests.
+// diagnostics report helps tune it.
+// Read only: it makes no network requests (no BOSS interfaces), never types into the
+// page and never clicks anything. Sending, greeting, opening conversations, scrolling,
+// asking for resumes and collecting history were removed.
 (() => {
   if (window.__hraMain) return;
   window.__hraMain = true;
   const post = (type, data) => window.postMessage({ __hra: 'main', type, data }, location.origin);
-  const wait = ms => new Promise(r => setTimeout(r, ms));
   const visible = e => {
     if (!e || !e.getClientRects || !e.getClientRects().length) return false;
     const r = e.getBoundingClientRect();
@@ -20,13 +22,6 @@
   };
   const cls = e => String((e && e.className && e.className.baseVal !== undefined ? e.className.baseVal : e && e.className) || '');
   const textOf = e => (e && (e.innerText || e.textContent) || '').replace(/\s+\n/g, '\n').trim();
-  function realClick(b) {
-    const r = b.getBoundingClientRect();
-    const o = { bubbles: true, cancelable: true, view: window, button: 0, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
-    b.dispatchEvent(new PointerEvent('pointerdown', o)); b.dispatchEvent(new MouseEvent('mousedown', o));
-    b.dispatchEvent(new PointerEvent('pointerup', o)); b.dispatchEvent(new MouseEvent('mouseup', o));
-    b.click();
-  }
   const isChat = () => /chat/.test(location.pathname) && !/recommend/.test(location.pathname);
 
   // ---------- conversation on screen ----------
@@ -114,7 +109,7 @@
   }
   let lastSig = '';
   function readChat() {
-    if (!isChat() || collecting) return;
+    if (!isChat()) return;
     const rows = messageRows();
     const name = currentName();
     if (!rows.length || !name) return;
@@ -129,51 +124,14 @@
       origin: first ? (first.dir === 'in' ? 'applied' : 'greeted') : 'unknown', profile: null, messages: msgs, phones: shownPhones() });
   }
 
-  // ---------- input / send ----------
+  // ---------- input / send (located for diagnostics only; never written to or clicked) ----------
   function chatInput() {
     const c = [...document.querySelectorAll('textarea, [contenteditable="true"], #boss-chat-editor-input, [class*="editor"] [contenteditable]')]
       .filter(e => visible(e) && e.getBoundingClientRect().top > window.innerHeight * 0.4);
     return c[c.length - 1] || null;
   }
-  const inputText = el => el ? (el.tagName === 'TEXTAREA' ? el.value : el.innerText || '').trim() : '';
-  function setInput(el, text) {
-    el.focus();
-    if (el.tagName === 'TEXTAREA') {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(el, text);
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-    } else {
-      const sel = window.getSelection(); const range = document.createRange();
-      range.selectNodeContents(el); sel.removeAllRanges(); sel.addRange(range);
-      document.execCommand('insertText', false, text);
-      el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
-    }
-  }
   function sendBtn() {
     return [...document.querySelectorAll('button, [class*="send"], [class*="btn"]')].find(e => visible(e) && /^发\s*送$/.test(textOf(e))) || null;
-  }
-  function fill(text) {
-    const el = chatInput();
-    if (!el) return post('actionResult', { ok: false, msg: '没找到聊天输入框（BOSS 适配中，请把诊断信息发给技术支持）' });
-    setInput(el, text);
-    post('actionResult', { ok: true, msg: '已填入输入框，请检查后点“发送”' });
-  }
-  async function sendText(text, reqId) {
-    const el = chatInput();
-    if (!el) return post('sendResult', { reqId, ok: false, msg: '没找到聊天输入框' });
-    if (inputText(el)) return post('sendResult', { reqId, ok: false, msg: '输入框里有你正在写的内容，已跳过' });
-    setInput(el, text);
-    await wait(500 + Math.random() * 600);
-    const b = sendBtn();
-    if (b) realClick(b);
-    else for (const t of ['keydown', 'keypress', 'keyup']) el.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-    for (let k = 0; k < 10; k++) { await wait(300); if (!inputText(el)) return post('sendResult', { reqId, ok: true, msg: '已发送' }); }
-    post('sendResult', { reqId, ok: false, msg: '点了发送，但输入框没清空，请看一下页面' });
-  }
-  function clickByText(name) {
-    const b = [...document.querySelectorAll('button, span, div, a')].filter(e => visible(e) && e.children.length <= 2 && textOf(e) === name);
-    const t = b.find(e => e.tagName === 'BUTTON') || b[0];
-    if (!t) return post('actionResult', { ok: false, msg: `没找到“${name}”按钮` });
-    realClick(t); post('actionResult', { ok: true, msg: `已点“${name}”，请在弹出的窗口里完成` });
   }
 
   // ---------- unread conversations (red number badges in the left list) ----------
@@ -212,96 +170,6 @@
     }
     return rows.sort((a, b) => a.top - b.top);
   }
-  const visited = new Map();
-  async function nextUnread(reqId, skip) {
-    if (inputText(chatInput())) return post('openResult', { reqId, ok: false, msg: '输入框有内容，暂不切换会话' });
-    const cur = currentName();
-    const rows = badgeRows();
-    const row = rows.find(r => r.name !== cur && !(skip || []).includes(`row:${r.name}`) && (!visited.has(r.name) || Date.now() - visited.get(r.name) > 120000));
-    if (!row) return post('openResult', { reqId, ok: false, none: true, msg: '没有未读会话', sessions: '-', badges: rows.length });
-    visited.set(row.name, Date.now());
-    const targets = [row.row, ...[...row.row.querySelectorAll('*')].filter(e => e.children.length === 0 && textOf(e) === row.name)];
-    for (const t of targets) {
-      realClick(t);
-      for (let k = 0; k < 8; k++) { await wait(250); if (currentName() === row.name) return post('openResult', { reqId, ok: true, how: '点未读行', msg: `打开会话：${row.name}` }); }
-    }
-    post('openResult', { reqId, ok: false, failed: true, id: `row:${row.name}`, msg: `打不开会话「${row.name}」，已跳过` });
-  }
-
-  // ---------- past conversations (read only: opens each, never types or sends) ----------
-  // conversations with unread messages are skipped so they are not marked as read
-  let collecting = false;
-  function readMessages(name) {
-    return messageRows().map(r => ({ dir: dirOf(r), text: bubbleText(r) })).filter(m => m.text)
-      .map((m, i) => ({ ...m, id: `${name}#${i}#${m.dir}#${m.text.slice(0, 30)}` })).slice(-200);
-  }
-  async function collectHistory(reqId, max) {
-    if (collecting) return post('historyResult', { reqId, ok: false, msg: '正在采集中' });
-    const all = listRows();
-    if (!all.length) return post('historyResult', { reqId, ok: false, msg: '没认出左侧的会话列表（请把诊断信息发给技术支持）' });
-    collecting = true;
-    const list = all.filter(x => !rowUnread(x.row)).slice(0, max || 30);
-    const out = []; let skipped = all.length - list.length;
-    for (let i = 0; i < list.length && collecting; i++) {
-      const { name } = list[i];
-      // the row element may have been re-rendered: look it up again by name
-      const row = (listRows().find(x => x.name === name) || list[i]).row;
-      if (currentName() !== name) {
-        realClick(row);
-        let ok = false;
-        for (let k = 0; k < 14 && !ok; k++) { await wait(300); ok = currentName() === name; }
-        if (!ok) { const nm = [...row.querySelectorAll('*')].find(e => e.children.length === 0 && textOf(e) === name); if (nm) { realClick(nm); for (let k = 0; k < 10 && !ok; k++) { await wait(300); ok = currentName() === name; } } }
-        if (!ok) { skipped++; continue; }
-        await wait(800 + Math.random() * 800); // let the messages render
-      }
-      const messages = readMessages(name);
-      if (messages.length) out.push({ sessionId: `boss:${name}:${currentJob()}`, uid: '', name, job: currentJob(), messages });
-      post('historyProgress', { reqId, done: i + 1, total: list.length, name });
-    }
-    collecting = false;
-    post('historyResult', { reqId, ok: true, sessions: out, skipped });
-  }
-
-  // ---------- ask for the attachment resume via the platform's own button (“求简历”) ----------
-  async function askResume(reqId) {
-    const before = messageRows().length;
-    const btn = [...document.querySelectorAll('button, span, div, a')].filter(e => visible(e) && e.children.length <= 2 && /^(求简历|要附件简历|索要简历|要简历)$/.test(textOf(e)))
-      .find((e, i, all) => !all.some(o => o !== e && e.contains(o)));
-    if (!btn) return post('resumeResult', { reqId, ok: false, msg: '没找到「求简历」按钮' });
-    realClick(btn);
-    for (let k = 0; k < 16; k++) {
-      await wait(300);
-      const dlg = [...document.querySelectorAll('[class*="dialog"], [class*="modal"], [class*="popup"], [class*="pop"]')].find(e => visible(e) && /简历/.test(textOf(e)));
-      const ok = dlg && [...dlg.querySelectorAll('button, span, div, a')].find(b => visible(b) && b.children.length <= 1 && /^(确定|确认|发送|立即索要|索要)$/.test(textOf(b)));
-      if (ok) { realClick(ok); await wait(800); }
-      const toast = [...document.querySelectorAll('[class*="toast"], [class*="tip"], [class*="message"]')].find(e => visible(e) && /已发送|已索要|请求已/.test(textOf(e)));
-      if (messageRows().length > before || toast) return post('resumeResult', { reqId, ok: true, msg: '已向对方索要附件简历' });
-    }
-    post('resumeResult', { reqId, ok: false, msg: '点了「求简历」，但没看到发出的请求，请你看一下页面' });
-  }
-
-  // ---------- follow-ups ----------
-  async function openBy(reqId, { name }) {
-    if (inputText(chatInput())) return post('openResult', { reqId, ok: false, msg: '输入框有内容，暂不切换会话' });
-    if (currentName() === name) return post('openResult', { reqId, ok: true, msg: `已在会话：${name}` });
-    const x = listRows().find(r => r.name === name);
-    if (!x) return post('openResult', { reqId, ok: false, msg: `会话列表里没找到「${name}」（可能在列表较后面）` });
-    const targets = [x.row, ...[...x.row.querySelectorAll('*')].filter(e => e.children.length === 0 && textOf(e) === name)];
-    for (const t of targets) {
-      realClick(t);
-      for (let k = 0; k < 8; k++) { await wait(250); if (currentName() === name) return post('openResult', { reqId, ok: true, msg: `打开会话：${name}` }); }
-    }
-    post('openResult', { reqId, ok: false, msg: `打不开会话「${name}」` });
-  }
-  function readState(reqId) {
-    const name = currentName();
-    const msgs = name ? readMessages(name).slice(-30) : [];
-    const labels = [...document.querySelectorAll('span, div, i, em, p')]
-      .filter(e => e.children.length === 0 && /^\[?(已读|未读|送达)\]?$/.test((e.textContent || '').trim()) && visible(e) && e.getBoundingClientRect().left > window.innerWidth * 0.3);
-    const bottom = labels.sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
-    post('readStateResult', { reqId, name, lastDir: msgs.length ? msgs[msgs.length - 1].dir : null, read: bottom ? /已读/.test(bottom.textContent) : null, messages: msgs });
-  }
-
   // ---------- 推荐牛人 (recommend page; usually inside an iframe /web/frame/recommend/) ----------
   const isRecPage = () => /recommend/.test(location.pathname);
   const GREET_TXT = /^(打招呼|立即沟通|继续沟通|已沟通|沟通)$/;
@@ -410,31 +278,6 @@
     const sig = job + '|' + cards.map(c => c.resumeNumber).join(',');
     if (cards.length && sig !== lastRecSig) { lastRecSig = sig; post('recommend', { cards, job }); }
   }
-  async function greetRec(uid) {
-    const card = document.querySelector(`[data-hra-uid="${CSS.escape(uid)}"]`);
-    if (!card) return post('greetResult', { uid, ok: false, msg: '卡片已不在页面上（翻页或刷新了）' });
-    card.scrollIntoView({ block: 'center' }); await wait(500);
-    const btn = greetButtons(card)[0];
-    if (!btn) return post('greetResult', { uid, ok: false, msg: '没找到打招呼按钮' });
-    if (/继续沟通|已沟通/.test(textOf(btn))) return post('greetResult', { uid, ok: true, msg: '已沟通过' });
-    realClick(btn);
-    for (let k = 0; k < 20; k++) {
-      await wait(500);
-      const b2 = greetButtons(card)[0];
-      if (!document.contains(card) || !b2 || /继续沟通|已沟通/.test(textOf(b2))) return post('greetResult', { uid, ok: true, msg: `打招呼成功${b2 ? `（按钮变为「${textOf(b2)}」）` : ''}` });
-      const tip = [...document.querySelectorAll('[class*="toast"], [class*="message"], [class*="tip"], [class*="dialog"], [class*="modal"]')].find(e => visible(e) && /已发送|成功|已向/.test(textOf(e)));
-      if (tip) return post('greetResult', { uid, ok: true, msg: '打招呼成功（平台提示已发送）' });
-      const dlg = [...document.querySelectorAll('[class*="dialog"], [class*="modal"], [class*="popup"]')].find(e => visible(e) && e.getBoundingClientRect().width > 200 && /招呼|沟通|次数|权益|购买|充值/.test(textOf(e)));
-      if (dlg) return post('greetResult', { uid, ok: false, dialog: true, msg: `点了打招呼，平台弹出窗口：「${textOf(dlg).replace(/\s+/g, ' ').slice(0, 60)}」——请手动处理，已暂停` });
-    }
-    post('greetResult', { uid, ok: false, unverified: true, msg: '点了打招呼，10 秒内没看到变化，未确认成功' });
-  }
-  function moreRec() {
-    const cards = greetButtons().map(cardOf).filter(Boolean);
-    if (cards.length) cards[cards.length - 1].scrollIntoView({ block: 'end' });
-    window.scrollBy(0, 2000);
-    for (const e of document.querySelectorAll('div, ul, section')) if (e.scrollHeight > e.clientHeight + 200 && /(auto|scroll)/.test(getComputedStyle(e).overflowY)) e.scrollTop = e.scrollHeight;
-  }
   function diagnoseRec() {
     const btns = greetButtons(), cards = btns.map(cardOf).filter(Boolean);
     const parsed = cards.slice(0, 20).map(c => { try { return parseCard(c); } catch { return null; } }).filter(Boolean);
@@ -468,23 +311,13 @@
     };
   }
 
+  // read only: re-read the page or report its structure; every other request is refused
+  const ALLOWED = new Set(['diagnose', 'reread']);
   window.addEventListener('message', e => {
     const d = e.data;
     if (!d || d.__hra !== 'iso' || e.source !== window) return;
-    if (d.type === 'fill') fill(d.text);
-    if (d.type === 'native') clickByText(d.name);
-    if (d.type === 'send') sendText(String(d.text || ''), d.reqId);
-    if (d.type === 'nextUnread') nextUnread(d.reqId, d.skip);
+    if (!ALLOWED.has(d.type)) return post('actionResult', { ok: false, msg: `不执行「${d.type}」：插件只做筛选和回复建议，平台上的操作请你自己完成` });
     if (d.type === 'diagnose') { let r; try { r = isRecPage() ? diagnoseRec() : diagnose(); } catch (er) { r = { error: String(er && er.message || er) }; } post('diagResult', { reqId: d.reqId, ok: true, data: r }); }
-    if (d.type === 'greet') greetRec(d.uid);
-    if (d.type === 'more') moreRec();
-    if (d.type === 'resetVisited') visited.clear();
-    if (d.type === 'invite') post('inviteResult', { reqId: d.reqId, ok: false, msg: 'BOSS 直聘的自动发面试邀约还在适配中，请你手动点「约面试」' });
-    if (d.type === 'history') collectHistory(d.reqId, d.max);
-    if (d.type === 'openBy') openBy(d.reqId, d);
-    if (d.type === 'askResume') askResume(d.reqId);
-    if (d.type === 'readState') readState(d.reqId);
-    if (d.type === 'historyStop') collecting = false;
     if (d.type === 'reread') { lastSig = ''; lastRecSig = ''; isRecPage() ? readRecommend() : readChat(); }
   });
   setInterval(() => {

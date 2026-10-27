@@ -1,6 +1,7 @@
 // v1.0「只筛选 + 回复建议」面板（隔离环境）。
 // - 推荐页：读取页面已加载的卡片 → 后台初筛 → 卡片下方显示 AI 结论；不打招呼、不翻页、不加载更多。
-// - 聊天页：你打开的会话里候选人发来新消息时，生成回复建议；由你复制或填入输入框后，自己点平台的「发送」。
+// - 聊天页：你打开的会话里候选人发来新消息时，生成回复建议；你点「复制」后自己粘贴、自己点平台的「发送」。
+//   插件不往平台输入框里写字，不调用平台接口（页面脚本只读已加载的数据）。
 //   不自动发送、不自动打开其他会话、不主动跟进、不点平台上的任何按钮。
 // 旧版（打招呼、全自动回复等）见 hragentOS_旧版v0.9.13_备份。
 (() => {
@@ -131,8 +132,8 @@
     if (d.action) b += `<div class="hra-act">建议你在平台上点「${esc(d.action)}」${d.slot ? `：${esc(d.slot.date)} ${esc(d.slot.slot)}` : ''}</div>`;
     if (d.resumeAsk) b += '<div class="hra-act">这条回复提到了附件简历，需要的话请你在平台上点「要附件简历」</div>';
     if (d.blocked) b += '<p class="hra-muted">这条建议没通过检查，不建议直接使用，请参考后自己改写。</p>';
-    b += `<div class="hra-row"><button class="hra-btn pri" data-a="copy">${S.copied === d.reply ? '已复制 ✓' : '复制'}</button><button class="hra-btn" data-a="fill">填入输入框</button><button class="hra-btn" data-a="suggest">换一条</button></div>
-      <p class="hra-muted">填入后请检查内容，再自己点平台的「发送」。</p>
+    b += `<div class="hra-row"><button class="hra-btn pri" data-a="copy">${S.copied === d.reply ? '已复制 ✓' : '复制'}</button><button class="hra-btn" data-a="suggest">换一条</button></div>
+      <p class="hra-muted">复制后自己粘贴到平台输入框，检查无误再点「发送」。插件不会往平台页面里写任何内容。</p>
       <div class="hra-row"><button class="hra-btn" data-a="applied">我已发送</button><button class="hra-btn" data-a="skip">不回复</button><button class="hra-btn" data-a="diag">复制诊断信息</button></div>`;
     return b;
   }
@@ -154,10 +155,9 @@
     const d = S.draft;
     if (a === 'copy' && d) {
       try { await navigator.clipboard.writeText(d.reply); S.copied = d.reply; log('回复建议已复制，请粘贴到输入框后自己点发送'); }
-      catch { log('复制失败，请改用「填入输入框」或手动选中复制'); }
+      catch { log('复制失败，请手动选中上面的建议复制'); }
       return draw();
     }
-    if (a === 'fill' && d) { toMain('fill', { text: d.reply }); return; }
     if (a === 'skip') { S.draft = null; log('本条不回复'); return draw(); }
     if (a === 'applied' && d && S.candidateId) {
       const r = await api('/ext/chat/applied', { candidateId: S.candidateId, draft: d });
@@ -226,7 +226,7 @@
       let line = el.querySelector(':scope > .hra-line');
       if (!line) { line = document.createElement('div'); line.className = 'hra-line'; el.appendChild(line); }
       const cls = r.verdict === '推荐' ? 'ok' : r.verdict === '待确认' ? 'warn' : 'no';
-      const html = `<span class="hra-tag ${cls}">AI ${esc(r.verdict)}</span>${r.verdict !== '不推荐' ? `<b>${r.score} 分</b>` : ''}<span class="hra-why">${esc(r.reason)}</span>${r.reasonBy === 'ai' ? '<span class="hra-src">AI</span>' : ''}`;
+      const html = `<span class="hra-tag ${cls}">AI ${esc(r.verdict)}</span>${r.verdict !== '不推荐' ? `<b>${r.score}<small>分</small></b>` : ''}<span class="hra-why">${esc(r.reason)}</span>${r.reasonBy === 'ai' ? '<span class="hra-src">AI</span>' : ''}`;
       if (line.innerHTML !== html) line.innerHTML = html;
       el.classList.toggle('hra-v-ok', cls === 'ok'); el.classList.toggle('hra-v-warn', cls === 'warn'); el.classList.toggle('hra-v-no', cls === 'no');
     }

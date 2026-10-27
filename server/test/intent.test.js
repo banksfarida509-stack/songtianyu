@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { screen, normalizeZhaopin } from '../src/rules.js';
 import { DEFAULT_SETTINGS } from '../src/db.js';
 
-const rules = DEFAULT_SETTINGS.rules;
+// 旧的意向型规则：只在后台关掉「赋分标准」时生效（赋分标准见 scoring.test.js）
+const rules = { ...DEFAULT_SETTINGS.rules, scoring: { ...DEFAULT_SETTINGS.rules.scoring, enabled: false } };
 const card = over => normalizeZhaopin({
   resumeNumber: 'x1', userName: '测试', age: 25, educationLevel: '本科',
   workExperiences: [{ beginDate: '2023.07', endDate: '至今', companyName: '某科技公司', jobTitle: '运营专员' }],

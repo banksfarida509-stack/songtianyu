@@ -517,11 +517,72 @@ async function vKb(m) {
   if (all) all.onclick = async () => { await api('/kb/docs', { body: { title: '常见问题（来自历史约聊）', content: learnedDoc(L.topics.map((_, i) => i)), source: '历史约聊' } }); toast('已加入知识库'); vKb(m); };
 }
 
+/* ---------------- 岗位筛选标准（每项：不看 / 必须满足 / 加分） ---------------- */
+const CR_MODES = [['off', '不看'], ['must', '必须满足'], ['bonus', '加分']];
+const CR_MISSING = [['pending', '待确认'], ['fail', '不推荐'], ['pass', '算满足']];
+const tiersText = t => (Array.isArray(t) ? t : []).map(([mo, p]) => `${mo}:${p}`).join('，');
+const tiersParse = v => String(v || '').split(/[,，\s]+/).map(x => x.split(/[:：]/).map(Number)).filter(x => x.length === 2 && x.every(Number.isFinite));
+function critParam(k, it, p, cfg) {
+  const id = `data-cp="${k}|${it.key}|${p.key}"`, v = cfg[p.key];
+  const lab = p.label ? `<span class="small muted">${esc(p.label)}</span>` : '';
+  if (p.type === 'num') return `<label class="cr-p">${lab}<input type="number" class="inp" style="width:78px" ${id} value="${esc(v ?? '')}"></label>`;
+  if (p.type === 'select') return `<label class="cr-p">${lab}<select class="inp" style="width:auto" ${id}>${p.options.map(o => `<option ${o === v ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></label>`;
+  if (p.type === 'check') return `<label class="cr-p" style="flex-direction:row;gap:4px;align-items:center"><input type="checkbox" style="width:auto" ${id} ${v ? 'checked' : ''}>${lab}</label>`;
+  if (p.type === 'tiers') return `<label class="cr-p" style="flex:1 1 220px">${lab}<input class="inp" ${id} value="${esc(tiersText(v))}" placeholder="月数:分，例如 6:5，12:10，36:15，60:20"></label>`;
+  return `<label class="cr-p" style="flex:1 1 220px">${lab}<input class="inp" ${id} value="${esc((Array.isArray(v) ? v : []).join('，'))}" placeholder="逗号分隔"></label>`;
+}
+function critHtml(k, cr, items) {
+  if (!cr || !items.length) return '';
+  const I = cr.items || {};
+  const groups = [...new Set(items.map(x => x.group))];
+  return `<div class="fi full cr-box" data-cr="${k}" style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--bg2,#FAFBFC)">
+    <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:6px">
+      <b>筛选标准</b>
+      <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-cr-en="${k}" style="width:auto" ${cr.enabled !== false ? 'checked' : ''}>按这里判定（推荐 / 待确认 / 不推荐）</label>
+      <label style="display:flex;gap:6px;align-items:center">基础分<input type="number" class="inp" style="width:70px" data-cr-base="${k}" value="${esc(cr.base ?? 60)}"></label>
+      ${cr.saved ? '' : '<span class="tag t-grey">还没保存：下面是按旧规则换算的，点“保存岗位配置”后生效</span>'}
+    </div>
+    <p class="small muted" style="margin:0 0 8px">「必须满足」的项全部满足才是推荐，任一不满足就是不推荐，并写明是哪一项；页面上没显示这项信息时，按「缺信息时」那一列判。「加分」项只加分、不影响推荐与否，分数只用来排序。没勾「AI 可放宽」的项是硬条件：下面岗位备注的 AI 复核不会放宽它，保证 100% 按这里来。</p>
+    <div style="overflow-x:auto"><table class="tbl cr-tbl" style="min-width:760px"><thead><tr><th style="width:96px">怎么用</th><th>条件</th><th style="width:70px">加分</th><th style="width:90px">缺信息时</th><th style="width:72px">AI 可放宽</th></tr></thead><tbody>
+    ${groups.map(g => `<tr><td colspan="5" class="small" style="background:var(--line,#EEF0F3);font-weight:600">${esc(g)}</td></tr>` + items.filter(x => x.group === g).map(it => {
+      const c = I[it.key] || { mode: 'off', points: 0, missing: 'pending', aiWiden: true };
+      return `<tr class="cr-row ${c.mode === 'off' ? 'cr-off' : ''}">
+        <td><select class="inp" style="width:auto" data-cm="${k}|${it.key}">${CR_MODES.map(([v, t]) => `<option value="${v}" ${c.mode === v ? 'selected' : ''}>${t}</option>`).join('')}</select></td>
+        <td><div style="font-weight:500;margin-bottom:${it.params.length ? 4 : 0}px">${esc(it.label)}</div>${it.params.length ? `<div style="display:flex;flex-wrap:wrap;gap:8px">${it.params.map(p => critParam(k, it, p, c)).join('')}</div>` : ''}</td>
+        <td><input type="number" class="inp" style="width:60px" data-cpt="${k}|${it.key}" value="${esc(c.points ?? 0)}"></td>
+        <td><select class="inp" style="width:auto" data-cmi="${k}|${it.key}">${CR_MISSING.map(([v, t]) => `<option value="${v}" ${(c.missing || 'pending') === v ? 'selected' : ''}>${t}</option>`).join('')}</select></td>
+        <td style="text-align:center"><input type="checkbox" style="width:auto" data-cai="${k}|${it.key}" ${c.aiWiden !== false ? 'checked' : ''}></td></tr>`;
+    }).join('')).join('')}
+    </tbody></table></div>
+    <div class="inline-form" style="margin-top:8px"><button class="btn" data-cr-try="${k}">试算（不保存）：按现在填的标准看库里的人会怎么判</button></div>
+    <div class="small" data-cr-res="${k}"></div></div>`;
+}
+/** read one role's criteria back from the page; null when the role has no editor */
+function critBody(k, m, items) {
+  const box = m.querySelector(`[data-cr="${k}"]`);
+  if (!box) return null;
+  const q = sel => box.querySelector(sel);
+  const out = { enabled: q(`[data-cr-en="${k}"]`).checked, base: Number(q(`[data-cr-base="${k}"]`).value) || 0, items: {} };
+  for (const it of items) {
+    const key = `${k}|${it.key}`;
+    const o = { mode: q(`[data-cm="${key}"]`).value, points: Number(q(`[data-cpt="${key}"]`).value) || 0, missing: q(`[data-cmi="${key}"]`).value, aiWiden: q(`[data-cai="${key}"]`).checked };
+    for (const p of it.params) {
+      const el = q(`[data-cp="${key}|${p.key}"]`);
+      if (!el) continue;
+      o[p.key] = p.type === 'num' ? (el.value.trim() === '' ? null : Number(el.value)) : p.type === 'check' ? el.checked : p.type === 'tiers' ? tiersParse(el.value)
+        : p.type === 'select' ? el.value : el.value.split(/[,，、\s]+/).map(x => x.trim()).filter(Boolean);
+    }
+    out.items[it.key] = o;
+  }
+  return out;
+}
+
 /* ---------------- 设置 ---------------- */
 async function vSettings(m) {
   m.innerHTML = loading;
   const [st, ivs] = await Promise.all([api('/settings'), api('/interviewers')]);
   const R = st.rules, SC = st.schedule, AI = st.ai, ORG = st.org, AR = st.autoReply, RO = st.roles || {}, FU = AR.followup || {}, GR = st.greet || {};
+  const CRV = st.criteria || { items: [], byRole: {} };
   const MODES = { auto: '全自动', semi: '半自动', human: '转人工' };
   const AR_CATS = { '跟进': '对方久未回复时的主动跟进（见下方“主动跟进”设置）', '投递-符合': '主动投递、初筛符合 → 感谢并邀约初试', '投递-不符合': '主动投递、初筛不符合 → 礼貌婉拒', '投递-待确认': '主动投递、简历信息不全 → 先问关键信息',
     提问: '学校在哪？上几节课？', 提供信息: '有初中数学教资，2 月能到岗', 约面时间: '明天下午可以去面试', 确认参加: '好的，我会准时到',
@@ -553,24 +614,41 @@ async function vSettings(m) {
       <label class="fi">意向型年龄上限<input id="r-ia" type="number" value="${esc(R.intentMaxAge ?? 30)}"></label>
       <label class="fi">意向型最低学历<select id="r-ie">${['大专', '本科', '硕士'].map(x => `<option ${x === (R.intentMinEdu || '本科') ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
       <label class="fi full">求职方向关键词（命中任一即算教师类，逗号分隔）<input id="r-ik" value="${esc((R.intentKeywords || []).join('，'))}"></label></div>
+      ${(() => { const S = R.scoring || {}, E = S.exp || [[6, 5], [12, 10], [36, 15], [60, 20]]; return `
+      <h4 style="margin:14px 0 6px">教师赋分标准</h4>
+      <p class="small muted" style="margin:0 0 8px">开启后，教师岗的结论和分数完全按这里算：基础分 + 研究生 + 985/211 + 教育工作经验（只取一档，不叠加）。公立 / 私立学校、任何教育机构的经历都算教育经验。上面的“年龄上限”“科目关键词”“学校 / 培训机构关键词”“意向型”在开启时不再使用。</p>
+      <div class="grid-form">
+      <label class="fi full" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" id="s-on" style="width:auto" ${S.enabled !== false ? 'checked' : ''}><b>按赋分标准判定和打分</b></label>
+      <label class="fi">基础分（本科、求职方向是教学类）<input id="s-base" type="number" value="${esc(S.base ?? 60)}"></label>
+      <label class="fi">没有教育经验时的年龄上限<input id="s-fa" type="number" value="${esc(S.freshMaxAge ?? 30)}"></label>
+      <label class="fi">年龄上限（超过一律不合适）<input id="s-ma" type="number" value="${esc(S.maxAge ?? 42)}"></label>
+      <label class="fi">研究生学历加分<input id="s-mb" type="number" value="${esc(S.masterBonus ?? 5)}"></label>
+      <label class="fi">本科 985 / 211 加分<input id="s-b9" type="number" value="${esc(S.bach985 ?? 5)}"></label>
+      <label class="fi">研究生 985 / 211 再加分<input id="s-m9" type="number" value="${esc(S.master985 ?? 5)}"></label>
+      <label class="fi">教育经验 半年–1 年<input id="s-e0" type="number" value="${esc(E[0]?.[1] ?? 5)}"></label>
+      <label class="fi">教育经验 1–3 年<input id="s-e1" type="number" value="${esc(E[1]?.[1] ?? 10)}"></label>
+      <label class="fi">教育经验 3–5 年<input id="s-e2" type="number" value="${esc(E[2]?.[1] ?? 15)}"></label>
+      <label class="fi">教育经验 5 年及以上<input id="s-e3" type="number" value="${esc(E[3]?.[1] ?? 20)}"></label>
+      <label class="fi full">教学类求职方向关键词（逗号分隔）<input id="s-ik" value="${esc((S.intentKeywords || []).join('，'))}"></label></div>`; })()}
       <div class="inline-form"><button class="btn pri" id="r-save">保存</button><button class="btn" id="r-re">按新规则重新初筛全部</button></div></div></div>
     <div class="card" id="roles-card"><div class="card-h"><h3>岗位配置</h3><span class="sub">按平台上的职位名自动识别岗位；每个岗位有自己的初筛规则、约聊要了解的问题和沟通要点</span></div><div class="card-b">
       ${Object.entries(RO).map(([k, r]) => `<details class="role-box" style="border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-bottom:10px" ${k === 'teacher' ? '' : 'open'}>
-        <summary style="cursor:pointer;font-weight:600">${esc(r.name)}${k === 'teacher' ? '<span class="small muted">（初筛规则见上方“初筛规则”）</span>' : ''}</summary>
+        <summary style="cursor:pointer;font-weight:600">${esc(r.name)}<span class="small muted">（${CRV.byRole[k] && CRV.byRole[k].saved && CRV.byRole[k].enabled ? '按下方“筛选标准”判定' : CRV.byRole[k] && CRV.byRole[k].saved ? '筛选标准已关闭，用旧规则' : '筛选标准未保存，目前用旧规则'}）</span></summary>
         <div class="grid-form" style="margin-top:8px">
           ${k === 'teacher' ? '' : `<label class="fi full" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" data-ro-en="${k}" style="width:auto" ${r.enabled !== false ? 'checked' : ''}>启用这个岗位</label>`}
           <label class="fi full">职位名包含这些词就算这个岗位（逗号分隔）<input data-ro-jk="${k}" value="${esc((r.jobKeywords || []).join('，'))}"></label>
-          ${r.rules ? `<label class="fi">年龄上限<input type="number" data-ro-age="${k}" value="${esc(r.rules.maxAge ?? 35)}"></label>
+          ${critHtml(k, CRV.byRole[k], CRV.items)}
+          ${r.rules ? `<details class="fi full"><summary class="small muted" style="cursor:pointer">旧版规则（没启用上面的筛选标准时才用）</summary><div class="grid-form" style="margin-top:6px"><label class="fi">年龄上限<input type="number" data-ro-age="${k}" value="${esc(r.rules.maxAge ?? 35)}"></label>
           <label class="fi">最低学历<select data-ro-edu="${k}">${['大专', '本科', '硕士'].map(x => `<option ${x === (r.rules.minEdu || '大专') ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
           <label class="fi">意向型年龄上限（没经验但求职方向对口）<input type="number" data-ro-young="${k}" value="${esc(r.rules.youngMaxAge ?? 28)}"></label>
           <label class="fi full" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" data-ro-tz="${k}" style="width:auto" ${r.rules.requireTongzhao ? 'checked' : ''}>要求统招（全日制）学历；简历没写是否统招时，约聊中会问</label>
           <label class="fi full" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" data-ro-tzx="${k}" style="width:auto" ${r.rules.eduSalesException ? 'checked' : ''}>在教育行业做过销售类岗位的，可以接受非统招</label>
           <label class="fi full">相关经历关键词（职位或公司名命中即算有经验）<input data-ro-exp="${k}" value="${esc((r.rules.expKeywords || []).join('，'))}"></label>
           <label class="fi full">相关专业关键词（加分）<input data-ro-major="${k}" value="${esc((r.rules.majorKeywords || []).join('，'))}"></label>
-          <label class="fi full">求职方向关键词<input data-ro-intent="${k}" value="${esc((r.rules.intentKeywords || []).join('，'))}"></label>` : ''}
+          <label class="fi full">求职方向关键词<input data-ro-intent="${k}" value="${esc((r.rules.intentKeywords || []).join('，'))}"></label></div></details>` : ''}
           <label class="fi full">约聊时依次了解（一行一个问题，AI 每条消息最多问一个）<textarea data-ro-q="${k}" style="min-height:96px">${esc((r.questions || []).map(q => q[1]).join('\n'))}</textarea></label>
           <label class="fi full">岗位沟通要点（工作内容、要突出什么、要确认什么）<textarea data-ro-focus="${k}" style="min-height:80px">${esc(r.focus || '')}</textarea></label>
-          <label class="fi full"><span><b>岗位要求与特殊情况备注</b> <span class="small muted">— 规则判“不推荐 / 待确认”的人，AI 会按这里复核，符合放宽条件的改为推荐或待确认；只放宽，不会把规则合格的人判为不推荐</span></span>
+          <label class="fi full"><span><b>岗位要求与特殊情况备注</b> <span class="small muted">— 规则判“不推荐 / 待确认”的人，AI 会按这里复核，符合放宽条件的改为推荐或待确认；只放宽，不会把规则合格的人判为不推荐；筛选标准里没勾「AI 可放宽」的项不会被放宽</span></span>
             <textarea data-ro-notes="${k}" style="min-height:100px" placeholder="一行写一条，用大白话即可，例如：&#10;有公立学校教学经验的，年龄可以放宽到 40 岁&#10;专业不对口，但在培训机构带过 2 年以上班的也可以&#10;统招中专毕业、后来专升本或自考本科的，也可以考虑&#10;做过幼儿园老师、想转初中的，可以约来面试看看">${esc(r.notes || '')}</textarea></label>
         </div></details>`).join('')}
       <div class="inline-form"><button class="btn pri" id="ro-save">保存岗位配置</button><button class="btn" id="ro-re">保存并按新规则重新初筛全部</button></div></div></div>
@@ -626,12 +704,18 @@ async function vSettings(m) {
       <div class="inline-form"><button class="btn" id="demo-seed">导入示例数据</button><button class="btn" id="demo-clear">清空示例数据</button></div></div></div>
   </div></div>`;
   const list = v => v.split(/[,，\s]+/).map(x => x.trim()).filter(Boolean);
+  // 空着不填用默认值；填 0 就是 0 分
+  const numOr = (v, d) => { const n = Number(String(v).trim()); return String(v).trim() === '' || !Number.isFinite(n) ? d : n; };
   const save = async (body, msg = '已保存') => { await api('/settings', { method: 'PUT', body }); toast(msg); };
   $('#rot').onclick = async () => { await api('/settings/rotate-token', { body: {} }); toast('令牌已更换，请重新下载插件'); vSettings(m); };
   $('#ai-save').onclick = () => save({ ai: { enabled: $('#ai-on').checked, provider: $('#ai-p').value.trim(), model: $('#ai-m').value.trim(), fallbackProvider: $('#ai-fp').value.trim(), fallbackModel: $('#ai-fm').value.trim() } });
   $('#ai-test').onclick = async () => { $('#ai-res').textContent = '测试中…'; const r = await api('/tools/llm-test', { body: {} }); $('#ai-res').innerHTML = r.ok ? `<b class="ok-dot">● 正常</b> ${esc(r.provider)}/${esc(r.model)} · ${r.ms} ms · “${esc(r.reply)}”` : `<b class="bad-dot">● 失败</b> ${esc(r.error)}`; };
   $('#r-save').onclick = () => save({ rules: { maxAge: +$('#r-age').value, minEdu: $('#r-edu').value, maxGradYear: Math.max(0, parseInt($('#r-grad').value, 10) || 0), requireTongzhaoBachelor: $('#r-tzb').checked, subjectKeywords: list($('#r-kw').value), schoolPattern: $('#r-sp').value.trim(), trainingPattern: $('#r-tp').value.trim(),
-    intentTrack: $('#r-it').checked, intentMaxAge: +$('#r-ia').value || 30, intentMinEdu: $('#r-ie').value, intentKeywords: list($('#r-ik').value) } });
+    intentTrack: $('#r-it').checked, intentMaxAge: +$('#r-ia').value || 30, intentMinEdu: $('#r-ie').value, intentKeywords: list($('#r-ik').value),
+    scoring: { enabled: $('#s-on').checked, base: numOr($('#s-base').value, 60), freshMaxAge: numOr($('#s-fa').value, 30), maxAge: numOr($('#s-ma').value, 42),
+      masterBonus: numOr($('#s-mb').value, 5), bach985: numOr($('#s-b9').value, 5), master985: numOr($('#s-m9').value, 5),
+      exp: [[6, numOr($('#s-e0').value, 5)], [12, numOr($('#s-e1').value, 10)], [36, numOr($('#s-e2').value, 15)], [60, numOr($('#s-e3').value, 20)]],
+      intentKeywords: list($('#s-ik').value) } } });
   // read every field from the page, so one card's save never reverts another card's edits
   const orgBody = () => ({ ...ORG, place: $('#o-place').value.trim(), persona: $('#o-persona').value.trim(),
     role: $('#o-role').value.trim(), agentName: $('#o-agent').value.trim(), name: $('#o-name').value.trim() || ORG.name });
@@ -659,6 +743,8 @@ async function vSettings(m) {
       const old = r.questions || [];
       const questions = lines.map((q, i) => [(old.find(o => o[1] === q) || old[i] || [`q${i + 1}`])[0], q]);
       const o = { ...r, jobKeywords: list(v('data-ro-jk').value), questions, focus: v('data-ro-focus').value.trim(), notes: v('data-ro-notes').value.trim() };
+      const cr = critBody(k, m, CRV.items);
+      if (cr) o.criteria = cr;
       if (v('data-ro-en')) o.enabled = v('data-ro-en').checked;
       if (r.rules) o.rules = { ...r.rules, maxAge: +v('data-ro-age').value || 35, minEdu: v('data-ro-edu').value, youngMaxAge: +v('data-ro-young').value || 28,
         requireTongzhao: v('data-ro-tz').checked, eduSalesException: v('data-ro-tzx').checked,
@@ -667,7 +753,18 @@ async function vSettings(m) {
     }
     return out;
   };
-  $('#ro-save').onclick = () => save({ roles: roBody() }, '岗位配置已保存');
+  $('#ro-save').onclick = () => save({ roles: roBody() }, '岗位配置已保存（筛选标准对新读到的简历立即生效；库里已有的人点“保存并按新规则重新初筛全部”）');
+  // 选「不看」的行变灰；试算按钮
+  $$('[data-cm]', m).forEach(s => s.onchange = () => s.closest('tr').classList.toggle('cr-off', s.value === 'off'));
+  $$('[data-cr-try]', m).forEach(b => b.onclick = async () => {
+    const k = b.dataset.crTry, out = $(`[data-cr-res="${k}"]`, m);
+    out.textContent = '试算中…';
+    try {
+      const r = await api('/settings/criteria-preview', { body: { role: k, criteria: critBody(k, m, CRV.items) } });
+      out.innerHTML = `<p style="margin:6px 0">库里这个岗位 <b>${r.total}</b> 人，按现在填的标准：推荐 <b>${r.count['推荐']}</b> · 待确认 <b>${r.count['待确认']}</b> · 不推荐 <b>${r.count['不推荐']}</b>（只按标准算，不含 AI 放宽）</p>`
+        + (r.changed.length ? `<table class="tbl"><thead><tr><th>姓名</th><th>现在</th><th>改为</th><th>原因</th></tr></thead><tbody>${r.changed.map(x => `<tr><td>${esc(x.name || '')} <span class="muted">${esc(x.age ?? '')}岁 ${esc(x.edu || '')}</span></td><td>${esc(x.from || '')}</td><td><b>${esc(x.to)}</b></td><td class="small">${esc(x.reason)}</td></tr>`).join('')}</tbody></table><p class="small muted">最多列 30 位结论会变的人。</p>` : '<p class="small muted">和现在的结论没有不同。</p>');
+    } catch (e) { out.textContent = e.message; }
+  });
   $('#ro-re').onclick = async () => {
     await save({ roles: roBody() });
     const b = $('#ro-re'); b.disabled = true; b.textContent = '重新初筛中，AI 正在按备注复核…（可能要 1–2 分钟）';

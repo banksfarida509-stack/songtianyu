@@ -10,13 +10,28 @@ async function conf() {
   };
 }
 
-// 工具栏图标 → 设置与知识库
-chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
+// 工具栏图标 → 打开侧边栏（BOSS直聘的结论和建议显示在侧边栏；侧边栏右上角「设置」进设置与知识库）
+chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true }).catch(() => {});
+// Chrome 不允许插件自己弹出侧边栏：快捷键 Alt+J 打开（按键算作用户操作）
+chrome.commands?.onCommand.addListener((cmd, tab) => {
+  if (cmd === 'open-panel' && tab) chrome.sidePanel.open({ windowId: tab.windowId }).catch(() => {});
+});
+// BOSS 页面读到了内容：图标亮「AI」角标，提示点图标打开侧边栏（只改插件自己的图标，不碰页面）
+const badged = new Set();
+function badge(tabId) {
+  if (badged.has(tabId)) return;
+  badged.add(tabId);
+  chrome.action.setBadgeBackgroundColor({ tabId, color: '#0E8A5F' }).catch(() => {});
+  chrome.action.setBadgeText({ tabId, text: 'AI' }).catch(() => {});
+}
+chrome.tabs.onUpdated.addListener((tabId, info) => { if (info.status === 'loading') badged.delete(tabId); });
+chrome.tabs.onRemoved.addListener(tabId => badged.delete(tabId));
 
 // 旧版留下的定时器（keepIm）在升级后清掉
 chrome.runtime.onInstalled.addListener(() => { chrome.alarms?.clearAll?.(); });
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+  if (msg?.type === 'boss' && sender.tab) { badge(sender.tab.id); return; }
   if (msg?.type === 'api') {
     (async () => {
       const c = await conf();

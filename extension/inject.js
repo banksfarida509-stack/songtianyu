@@ -1,8 +1,7 @@
 // Runs in the page's own JS world (MAIN) so it can read the data the page has
 // already loaded (Vue component props / Vuex store). It makes NO network
-// requests. It only reads, plus three explicit actions requested by the
-// content script after the recruiter clicks: fill the input box, click a native
-// button, click 打招呼 on one card.
+// requests. v1.0 only reads: it never types into the page or clicks anything
+// (the action functions below are old code that the message handler rejects).
 (() => {
   if (window.__hraMain) return;
   window.__hraMain = true;
@@ -826,15 +825,13 @@
   // v1.0：只筛选 + 回复建议。页面上只接受下面这几种指令：
   //   reread / tick  重新读取页面已加载的数据（只读）
   //   diagnose       复制页面结构用于适配（只读）
-  //   fill           招聘方点了「填入输入框」：把建议写进输入框，由招聘方自己点「发送」
-  // 打招呼、发送、打开会话、加载更多、约面试弹窗、要简历、采集历史等会操作页面的指令一律拒绝，
+  // 填入输入框、打招呼、发送、打开会话、加载更多、约面试弹窗、要简历、采集历史等会操作页面的指令一律拒绝，
   // 对应的旧函数保留在文件里但不再被调用（旧版见 hragentOS_旧版v0.9.13_备份）。
-  const ALLOWED = new Set(['fill', 'diagnose', 'reread', 'tick']);
+  const ALLOWED = new Set(['diagnose', 'reread', 'tick']);
   window.addEventListener('message', e => {
     const d = e.data;
     if (!d || d.__hra !== 'iso' || e.source !== window) return;
     if (!ALLOWED.has(d.type)) return post('actionResult', { ok: false, msg: `v1.0 不执行「${d.type}」：插件只做筛选和回复建议，平台上的操作请你自己完成` });
-    if (d.type === 'fill') fill(d.text);
     if (d.type === 'diagnose') { let r; try { r = diagnose(); } catch (er) { r = { error: String(er && er.message || er) }; } post('diagResult', { reqId: d.reqId, ok: true, data: r }); }
     if (d.type === 'reread') { lastSig = ''; lastChatSig = ''; tick(); }
     if (d.type === 'tick') tick();

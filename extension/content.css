@@ -47,11 +47,18 @@
 #hra-panel .hra-ok{color:#0E8A5F;margin:0;font-size:12.5px}
 #hra-panel .hra-log{font-size:11.5px;color:#7A808A}
 #hra-panel .hra-log summary{cursor:pointer}
-.hra-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;padding-top:8px;border-top:1px dashed #E1E5EC;font:12.5px/1.5 "PingFang SC","Microsoft YaHei",sans-serif;color:#41464F;grid-column:1/-1;width:100%}
+.hra-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;padding-top:8px;border-top:1px dashed #E1E5EC;font:12.5px/1.5 "PingFang SC","Microsoft YaHei",sans-serif;color:#41464F;grid-column:1/-1;width:100%;flex:0 0 100%;order:999;box-sizing:border-box}
 .hra-line b{color:#D0161F;font-family:"DIN Alternate","Bahnschrift",sans-serif}
 .hra-tag{display:inline-block;padding:0 8px;line-height:20px;border-radius:5px;font-size:12px}
 .hra-tag.ok{background:#E7F6EF;color:#0E8A5F} .hra-tag.warn{background:#FDF2E3;color:#B25E09} .hra-tag.no{background:#F1F2F4;color:#6B717B}
 .hra-src{font-size:10.5px;background:#FFF6DA;color:#9A6A00;border-radius:4px;padding:0 5px}
 .hra-v-ok{box-shadow:inset 3px 0 0 #0E8A5F} .hra-v-warn{box-shadow:inset 3px 0 0 #B25E09} .hra-v-no{opacity:.82}
+/* 卡片上的 AI 结论：结论和分数放大、实心底色，一眼能看到 */
+.hra-line{gap:10px;font-size:13.5px}
+.hra-line .hra-tag{padding:2px 12px;line-height:24px;border-radius:6px;font-size:16px;font-weight:700;letter-spacing:.5px}
+.hra-line .hra-tag.ok{background:#0E8A5F;color:#fff} .hra-line .hra-tag.warn{background:#E08A00;color:#fff} .hra-line .hra-tag.no{background:#8A9099;color:#fff}
+.hra-line b{font-size:24px;line-height:28px;font-weight:700}
+.hra-line b small{font-size:13px;font-weight:600;margin-left:2px}
+.hra-v-ok{box-shadow:inset 5px 0 0 #0E8A5F} .hra-v-warn{box-shadow:inset 5px 0 0 #E08A00}
 
 #hra-panel .hra-sel{font-size:12px;padding:1px 4px;border:1px solid #DADCE0;border-radius:4px;background:#fff;color:#1F2329}

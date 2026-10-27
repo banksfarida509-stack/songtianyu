@@ -139,7 +139,121 @@ export function bachelorCheck(c) {
   return { ok: true, ev: `${bach[0].school || ''} 本科${/统招|全日制/.test(bach[0].mode || '') ? '（统招）' : ''}` };
 }
 
+// ---------- 教师岗赋分标准（负责人在后台填的，rules.scoring） ----------
+// 985 / 211 院校（院校名去掉括号里的校区后完全一致才算，避免“XX大学城市科技学院”这类独立学院误判）
+const U985 = '清华大学 北京大学 中国人民大学 北京航空航天大学 北京理工大学 中国农业大学 北京师范大学 中央民族大学 南开大学 天津大学 大连理工大学 东北大学 吉林大学 哈尔滨工业大学 复旦大学 同济大学 上海交通大学 华东师范大学 南京大学 东南大学 浙江大学 中国科学技术大学 厦门大学 山东大学 中国海洋大学 武汉大学 华中科技大学 湖南大学 中南大学 中山大学 华南理工大学 四川大学 电子科技大学 重庆大学 西安交通大学 西北工业大学 西北农林科技大学 兰州大学 国防科技大学'.split(' ');
+const U211 = '北京交通大学 北京工业大学 北京科技大学 北京化工大学 北京邮电大学 北京林业大学 北京中医药大学 北京外国语大学 中国传媒大学 中央财经大学 对外经济贸易大学 北京体育大学 中央音乐学院 中国政法大学 华北电力大学 中国矿业大学 中国石油大学 中国地质大学 天津医科大学 河北工业大学 太原理工大学 内蒙古大学 辽宁大学 大连海事大学 延边大学 东北师范大学 哈尔滨工程大学 东北农业大学 东北林业大学 华东理工大学 东华大学 上海外国语大学 上海财经大学 上海大学 苏州大学 南京航空航天大学 南京理工大学 河海大学 江南大学 南京农业大学 中国药科大学 南京师范大学 安徽大学 合肥工业大学 福州大学 南昌大学 郑州大学 武汉理工大学 华中农业大学 华中师范大学 中南财经政法大学 湖南师范大学 暨南大学 华南师范大学 广西大学 海南大学 西南交通大学 四川农业大学 西南财经大学 西南大学 贵州大学 云南大学 西藏大学 西北大学 西安电子科技大学 长安大学 陕西师范大学 青海大学 宁夏大学 新疆大学 石河子大学 海军军医大学 空军军医大学 第二军医大学 第四军医大学'.split(' ');
+const TOP_SET = new Set([...U985, ...U211]);
+/** 一段教育经历的学校是不是 985 / 211：平台给的院校标签，或院校名在名单里 */
+export function is985or211(e) {
+  if (/985|211/.test(`${e.tag || ''}`)) return true;
+  const name = String(e.school || '').replace(/[（(][^）)]*[）)]/g, '').replace(/\s+/g, '').replace(/(分校|校区|医学部|本部)$/, '');
+  return TOP_SET.has(name);
+}
+// 年月：“2020.09” “2020-9” “2020年9月” → 月序号；“至今 / 今”→ 现在
+export const monthOf = s => {
+  const t = String(s || '');
+  if (/至今|今|现在/.test(t)) { const d = new Date(); return d.getFullYear() * 12 + d.getMonth(); }
+  const m = t.match(/((?:19|20)\d{2})(?:\D{1,2}(\d{1,2}))?/);
+  return m ? Number(m[1]) * 12 + (m[2] ? Number(m[2]) - 1 : 0) : null;
+};
+/** 一段工作经历的月数；起止都认不出时 null */
+export function monthsOf(w) {
+  const t = String(w.t || '');
+  const parts = t.split(/\s*(?:-|–|—|~|至(?!今))\s*/).filter(Boolean);
+  if (parts.length < 2) return null;
+  const a = monthOf(parts[0]), b = monthOf(parts[parts.length - 1]);
+  return a != null && b != null && b >= a ? b - a + 1 : null;
+}
+// 教育工作：公立 / 私立学校、任何教育机构都算，不看规模；或者职位本身是教学类
+const EDU_WORK_ORG = /学校|中学|小学|一中|二中|三中|附中|实验|学院|大学|幼儿园|教育|培训|辅导|学堂|课堂|网校|教培|书院|托管|早教|学而思|新东方|好未来|学大|精锐|昂立|卓越|猿辅导|作业帮|高途|掌门|豆神|思维/;
+const EDU_WORK_ROLE = /教师|老师|讲师|助教|家教|教研|班主任|教学|辅导|授课|主讲|学科|教练/;
+export const isEduWork = w => EDU_WORK_ROLE.test(w.role || '') || (EDU_WORK_ORG.test(w.org || '') && !/销售|顾问|招生|市场|财务|会计|行政|人事|司机|保安|保洁|厨师|IT|开发|设计/.test(w.role || ''));
+
+export const DEFAULT_SCORING = {
+  enabled: true,
+  base: 60,              // 本科，应届或毕业后 30 岁以内、求职方向是教学类 → 60 分
+  freshMaxAge: 30,       // 没有教育工作经验时的年龄上限
+  maxAge: 42,            // 超过一律不合适
+  masterBonus: 5,        // 研究生学历
+  bach985: 5,            // 本科 985 / 211
+  master985: 5,          // 研究生 985 / 211（再加）
+  // 教育工作经验（月数 → 加分），不叠加，取够得着的最高一档
+  exp: [[6, 5], [12, 10], [36, 15], [60, 20]],
+  intentKeywords: ['家教', '教学', '教师', '老师', '理科教师', '文科教师', '高中教师', '初中教师', '小学教师', '助教', '讲师', '教研', '班主任'],
+};
+
+/**
+ * 教师岗：按负责人的赋分标准判定和打分。结论：
+ *   超过 maxAge 岁 / 学历不够 / 非统招本科（开关）→ 不推荐
+ *   有教育工作经验（学校、任何教育机构）→ 推荐
+ *   没有经验：≤ freshMaxAge 岁且求职方向是教学类 → 推荐；超龄或方向不对 → 不推荐；简历没写方向 → 待确认
+ * 分数：base + 研究生 + 本科 985/211 + 研究生 985/211 + 教育经验档位（不叠加）。不推荐的封顶 40。
+ */
+export function screenTeacherStd(c, rules) {
+  const S = { ...DEFAULT_SCORING, ...(rules.scoring || {}) };
+  const exp = Array.isArray(S.exp) && S.exp.length ? [...S.exp].sort((a, b) => a[0] - b[0]) : DEFAULT_SCORING.exp;
+  const r = [];
+  r.push({ id: 'R01', name: `年龄 ≤ ${S.maxAge}`, ok: c.age == null ? null : c.age <= S.maxAge, ev: c.age == null ? '页面未显示年龄' : `${c.age} 岁`, hard: true });
+  r.push({ id: 'R02', name: `学历 ${rules.minEdu}及以上`, ok: eduRank(c.edu) < 0 ? null : eduRank(c.edu) >= eduRank(rules.minEdu), ev: c.edu || '页面未显示学历', hard: true });
+  const bc = rules.requireTongzhaoBachelor ? bachelorCheck(c) : null;
+  if (bc && bc.ok !== null) r.push({ id: 'R06', name: '统招全日制本科（不含专升本、非统招）', ok: bc.ok, ev: bc.ev, hard: true });
+
+  // 教育工作经验：能算出月数的经历加起来；都算不出时，用简历上的总工作年限
+  const eduWork = (c.work || []).filter(isEduWork);
+  let months = null;
+  if (eduWork.length) {
+    const known = eduWork.map(monthsOf).filter(m => m != null);
+    if (known.length) months = known.reduce((a, b) => a + b, 0);
+    else { const y = num(c.years); months = y != null ? y * 12 : null; }
+  }
+  const tier = months == null ? null : [...exp].reverse().find(([m]) => months >= m) || null;
+  const expTxt = months == null ? '' : months >= 12 ? `${Math.floor(months / 12)} 年${months % 12 ? months % 12 + ' 个月' : ''}` : `${months} 个月`;
+  r.push({ id: 'R04', name: '教育工作经验（公立 / 私立学校、任何教育机构都算）', ok: eduWork.length ? true : false,
+    ev: eduWork.length ? `${eduWork[0].org || ''} ${eduWork[0].role || ''}${expTxt ? `，共约 ${expTxt}` : '，年限未知'}` : '无教育工作经历' });
+
+  const intentText = `${c.intent || ''} ${c.expect || ''}`;
+  const kws = [...new Set([...(S.intentKeywords || []), ...(rules.intentKeywords || [])])];
+  const intentHit = kws.find(k => k && intentText.includes(k));
+  const fresh = !eduWork.length;
+  if (fresh) r.push({ id: 'R05', name: `没有经验：${S.freshMaxAge} 岁以内、求职方向是教学类`, ok: !intentText.trim() ? null : !!intentHit && (c.age == null ? null : c.age <= S.freshMaxAge),
+    ev: !intentText.trim() ? '简历没写求职方向' : intentHit ? `求职方向含“${intentHit}”，${c.age ?? '?'} 岁` : '求职方向不是教学类' });
+
+  // 分数
+  const isMaster = eduRank(c.edu) >= 4 || (c.edus || []).some(e => eduRank(e.deg) >= 4);
+  const bach = (c.edus || []).filter(e => eduRank(e.deg) === 3), mast = (c.edus || []).filter(e => eduRank(e.deg) >= 4);
+  // 只有顶部学校标签、没有逐段信息时，标签算在最高学历上
+  const topTag = /985|211/.test(c.school_tag || '');
+  const bachTop = bach.some(is985or211) || (topTag && !isMaster && !bach.length && eduRank(c.edu) === 3);
+  const mastTop = mast.some(is985or211) || (topTag && isMaster && !mast.length);
+  const parts = [[`基础分（${rules.minEdu}${fresh ? `，${S.freshMaxAge} 岁以内求职教学类` : ''}）`, S.base]];
+  if (isMaster) parts.push(['研究生学历', S.masterBonus]);
+  if (bachTop) parts.push(['本科 985 / 211', S.bach985]);
+  if (mastTop) parts.push(['研究生 985 / 211', S.master985]);
+  if (tier) parts.push([`教育工作经验 ${expTxt}（满 ${tier[0] >= 12 ? tier[0] / 12 + ' 年' : tier[0] + ' 个月'}档）`, tier[1]]);
+  const raw = parts.reduce((a, [, v]) => a + (Number(v) || 0), 0);
+
+  const live = r;
+  const hardFail = live.find(x => x.hard && x.ok === false);
+  let verdict;
+  if (hardFail) verdict = '不推荐';
+  else if (!fresh) verdict = live.some(x => x.ok === null) ? '待确认' : '推荐';
+  else { const r5 = r.find(x => x.id === 'R05'); verdict = r5.ok === false ? '不推荐' : r5.ok === null || live.some(x => x.ok === null) ? '待确认' : '推荐'; }
+  const score = Math.max(0, Math.min(100, verdict === '不推荐' ? Math.min(raw, 40) : raw));
+  r.push({ id: 'S', name: '赋分明细', ok: true, ev: parts.map(([k, v]) => `${k} +${v}`).join('；').replace('+' + S.base, S.base) + ` = ${raw}`, raw });
+
+  let reason;
+  const f = hardFail || r.find(x => x.id === 'R05' && x.ok === false);
+  if (verdict === '不推荐') reason = !f ? '不符合赋分标准' : f.id === 'R01' ? `年龄 ${c.age} 岁，超过 ${S.maxAge} 岁一律不合适` : f.id === 'R02' ? `${c.edu}学历，要求${rules.minEdu}及以上`
+    : f.id === 'R06' ? `${f.ev}，教师岗要求统招全日制本科` : intentHit ? `没有教育工作经验，${c.age} 岁超过 ${S.freshMaxAge} 岁` : '没有教育工作经验，求职方向也不是教学类';
+  else if (verdict === '待确认') reason = `${(r.find(x => x.ok === null) || {}).ev || '信息不全'}，需你确认`;
+  else reason = `${c.age ?? ''}岁 ${c.edu || ''}${bachTop || mastTop ? '（985/211）' : ''}；${fresh ? `无经验，求职方向“${intentHit}”` : `教育经验${expTxt || ''}`}；${raw} 分`;
+  return { verdict, score, rules: r, reason: clip(reason.trim(), 80) };
+}
+
 export function screen(c, rules) {
+  // 后台填了赋分标准（默认开）：教师岗完全按它判定和打分
+  if (rules.scoring && rules.scoring.enabled !== false) return screenTeacherStd(c, rules);
   const re = p => new RegExp(p);
   const titles = c.work.map(w => `${w.org} ${w.role}`).join(' | ');
   const kwHit = rules.subjectKeywords.find(k => (c.major || '').includes(k) || c.work.some(w => (w.role || '').includes(k)) || c.skills.some(x => x.includes(k)));

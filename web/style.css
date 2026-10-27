@@ -364,3 +364,8 @@ tbody tr:last-child td{border-bottom:0}
 .demo-tag{font-size:10.5px;background:var(--ai-bg);color:var(--ai);border-radius:4px;padding:0 5px;margin-left:4px}
 .inline-form{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}
 .inline-form select,.inline-form input{width:auto}
+
+/* 岗位筛选标准 */
+.cr-tbl td{vertical-align:top}
+.cr-p{display:flex;flex-direction:column;gap:2px}
+.cr-off td:not(:first-child){opacity:.45}

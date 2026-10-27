@@ -73,6 +73,12 @@ export const DEFAULT_SETTINGS = {
     maxGradYear: 2026,
     // 教师岗：要求统招全日制本科（第一学历本科；专升本、非统招本科不推荐）
     requireTongzhaoBachelor: true,
+    // 教师岗赋分标准（负责人定的）：判定和分数都按它算，见 rules.js screenTeacherStd
+    scoring: {
+      enabled: true, base: 60, freshMaxAge: 30, maxAge: 42, masterBonus: 5, bach985: 5, master985: 5,
+      exp: [[6, 5], [12, 10], [36, 15], [60, 20]],
+      intentKeywords: ['家教', '教学', '教师', '老师', '理科教师', '文科教师', '高中教师', '初中教师', '小学教师', '助教', '讲师', '教研', '班主任'],
+    },
   },
   schedule: {
     am: ['09:00', '09:30', '10:00', '10:30', '11:00'],
