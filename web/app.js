@@ -543,7 +543,7 @@ function critHtml(k, cr, items) {
       ${cr.saved ? '' : '<span class="tag t-grey">还没保存：下面是按旧规则换算的，点“保存岗位配置”后生效</span>'}
     </div>
     <p class="small muted" style="margin:0 0 8px">「必须满足」的项全部满足才是推荐，任一不满足就是不推荐，并写明是哪一项；页面上没显示这项信息时，按「缺信息时」那一列判。「加分」项只加分、不影响推荐与否，分数只用来排序。没勾「AI 可放宽」的项是硬条件：下面岗位备注的 AI 复核不会放宽它，保证 100% 按这里来。</p>
-    <div style="overflow-x:auto"><table class="tbl cr-tbl" style="min-width:760px"><thead><tr><th style="width:96px">怎么用</th><th>条件</th><th style="width:70px">加分</th><th style="width:90px">缺信息时</th><th style="width:72px">AI 可放宽</th></tr></thead><tbody>
+    <div style="overflow-x:auto"><table class="tbl cr-tbl" style="width:100%;min-width:680px"><thead><tr><th style="width:96px">怎么用</th><th>条件</th><th style="width:70px">加分</th><th style="width:90px">缺信息时</th><th style="width:72px">AI 可放宽</th></tr></thead><tbody>
     ${groups.map(g => `<tr><td colspan="5" class="small" style="background:var(--line,#EEF0F3);font-weight:600">${esc(g)}</td></tr>` + items.filter(x => x.group === g).map(it => {
       const c = I[it.key] || { mode: 'off', points: 0, missing: 'pending', aiWiden: true };
       return `<tr class="cr-row ${c.mode === 'off' ? 'cr-off' : ''}">
@@ -631,27 +631,6 @@ async function vSettings(m) {
       <label class="fi">教育经验 5 年及以上<input id="s-e3" type="number" value="${esc(E[3]?.[1] ?? 20)}"></label>
       <label class="fi full">教学类求职方向关键词（逗号分隔）<input id="s-ik" value="${esc((S.intentKeywords || []).join('，'))}"></label></div>`; })()}
       <div class="inline-form"><button class="btn pri" id="r-save">保存</button><button class="btn" id="r-re">按新规则重新初筛全部</button></div></div></div>
-    <div class="card" id="roles-card"><div class="card-h"><h3>岗位配置</h3><span class="sub">按平台上的职位名自动识别岗位；每个岗位有自己的初筛规则、约聊要了解的问题和沟通要点</span></div><div class="card-b">
-      ${Object.entries(RO).map(([k, r]) => `<details class="role-box" style="border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-bottom:10px" ${k === 'teacher' ? '' : 'open'}>
-        <summary style="cursor:pointer;font-weight:600">${esc(r.name)}<span class="small muted">（${CRV.byRole[k] && CRV.byRole[k].saved && CRV.byRole[k].enabled ? '按下方“筛选标准”判定' : CRV.byRole[k] && CRV.byRole[k].saved ? '筛选标准已关闭，用旧规则' : '筛选标准未保存，目前用旧规则'}）</span></summary>
-        <div class="grid-form" style="margin-top:8px">
-          ${k === 'teacher' ? '' : `<label class="fi full" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" data-ro-en="${k}" style="width:auto" ${r.enabled !== false ? 'checked' : ''}>启用这个岗位</label>`}
-          <label class="fi full">职位名包含这些词就算这个岗位（逗号分隔）<input data-ro-jk="${k}" value="${esc((r.jobKeywords || []).join('，'))}"></label>
-          ${critHtml(k, CRV.byRole[k], CRV.items)}
-          ${r.rules ? `<details class="fi full"><summary class="small muted" style="cursor:pointer">旧版规则（没启用上面的筛选标准时才用）</summary><div class="grid-form" style="margin-top:6px"><label class="fi">年龄上限<input type="number" data-ro-age="${k}" value="${esc(r.rules.maxAge ?? 35)}"></label>
-          <label class="fi">最低学历<select data-ro-edu="${k}">${['大专', '本科', '硕士'].map(x => `<option ${x === (r.rules.minEdu || '大专') ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
-          <label class="fi">意向型年龄上限（没经验但求职方向对口）<input type="number" data-ro-young="${k}" value="${esc(r.rules.youngMaxAge ?? 28)}"></label>
-          <label class="fi full" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" data-ro-tz="${k}" style="width:auto" ${r.rules.requireTongzhao ? 'checked' : ''}>要求统招（全日制）学历；简历没写是否统招时，约聊中会问</label>
-          <label class="fi full" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" data-ro-tzx="${k}" style="width:auto" ${r.rules.eduSalesException ? 'checked' : ''}>在教育行业做过销售类岗位的，可以接受非统招</label>
-          <label class="fi full">相关经历关键词（职位或公司名命中即算有经验）<input data-ro-exp="${k}" value="${esc((r.rules.expKeywords || []).join('，'))}"></label>
-          <label class="fi full">相关专业关键词（加分）<input data-ro-major="${k}" value="${esc((r.rules.majorKeywords || []).join('，'))}"></label>
-          <label class="fi full">求职方向关键词<input data-ro-intent="${k}" value="${esc((r.rules.intentKeywords || []).join('，'))}"></label></div></details>` : ''}
-          <label class="fi full">约聊时依次了解（一行一个问题，AI 每条消息最多问一个）<textarea data-ro-q="${k}" style="min-height:96px">${esc((r.questions || []).map(q => q[1]).join('\n'))}</textarea></label>
-          <label class="fi full">岗位沟通要点（工作内容、要突出什么、要确认什么）<textarea data-ro-focus="${k}" style="min-height:80px">${esc(r.focus || '')}</textarea></label>
-          <label class="fi full"><span><b>岗位要求与特殊情况备注</b> <span class="small muted">— 规则判“不推荐 / 待确认”的人，AI 会按这里复核，符合放宽条件的改为推荐或待确认；只放宽，不会把规则合格的人判为不推荐；筛选标准里没勾「AI 可放宽」的项不会被放宽</span></span>
-            <textarea data-ro-notes="${k}" style="min-height:100px" placeholder="一行写一条，用大白话即可，例如：&#10;有公立学校教学经验的，年龄可以放宽到 40 岁&#10;专业不对口，但在培训机构带过 2 年以上班的也可以&#10;统招中专毕业、后来专升本或自考本科的，也可以考虑&#10;做过幼儿园老师、想转初中的，可以约来面试看看">${esc(r.notes || '')}</textarea></label>
-        </div></details>`).join('')}
-      <div class="inline-form"><button class="btn pri" id="ro-save">保存岗位配置</button><button class="btn" id="ro-re">保存并按新规则重新初筛全部</button></div></div></div>
     <div class="card" id="ar-card"><div class="card-h"><h3>约聊回复方式</h3><span class="sub">候选人每条消息先由 AI 分类，再按分类处理</span></div><div class="card-b">
       <label class="fi full" style="flex-direction:row;gap:8px;align-items:center;font-size:14px"><input type="checkbox" id="ar-on" style="width:auto" ${AR.enabled ? 'checked' : ''}><b>开启全自动回复</b><span class="small muted">（关闭时，设为“全自动”的分类也只给建议）</span></label>
       <table class="tbl" style="margin:10px 0"><thead><tr><th>消息分类</th><th>示例</th><th>处理方式</th></tr></thead><tbody>
@@ -702,7 +681,28 @@ async function vSettings(m) {
       <div class="inline-form"><button class="btn sm" id="kb-add">新增一条</button><button class="btn pri sm" id="kb-save">保存知识库</button></div></div></div>
     <div class="card"><div class="card-h"><h3>示例数据</h3></div><div class="card-b" style="font-size:13px"><p style="margin:0 0 8px" class="muted">导入 12 位示例候选人（标“示例”）用于验收演示；正式使用前清空。</p>
       <div class="inline-form"><button class="btn" id="demo-seed">导入示例数据</button><button class="btn" id="demo-clear">清空示例数据</button></div></div></div>
-  </div></div>`;
+  </div></div>
+    <div class="card" id="roles-card" style="margin-top:16px"><div class="card-h"><h3>岗位配置</h3><span class="sub">按平台上的职位名自动识别岗位；每个岗位有自己的初筛规则、约聊要了解的问题和沟通要点</span></div><div class="card-b">
+      ${Object.entries(RO).map(([k, r]) => `<details class="role-box" style="border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-bottom:10px" ${k === 'teacher' ? '' : 'open'}>
+        <summary style="cursor:pointer;font-weight:600">${esc(r.name)}<span class="small muted">（${CRV.byRole[k] && CRV.byRole[k].saved && CRV.byRole[k].enabled ? '按下方“筛选标准”判定' : CRV.byRole[k] && CRV.byRole[k].saved ? '筛选标准已关闭，用旧规则' : '筛选标准未保存，目前用旧规则'}）</span></summary>
+        <div class="grid-form" style="margin-top:8px">
+          ${k === 'teacher' ? '' : `<label class="fi full" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" data-ro-en="${k}" style="width:auto" ${r.enabled !== false ? 'checked' : ''}>启用这个岗位</label>`}
+          <label class="fi full">职位名包含这些词就算这个岗位（逗号分隔）<input data-ro-jk="${k}" value="${esc((r.jobKeywords || []).join('，'))}"></label>
+          ${critHtml(k, CRV.byRole[k], CRV.items)}
+          ${r.rules ? `<details class="fi full"><summary class="small muted" style="cursor:pointer">旧版规则（没启用上面的筛选标准时才用）</summary><div class="grid-form" style="margin-top:6px"><label class="fi">年龄上限<input type="number" data-ro-age="${k}" value="${esc(r.rules.maxAge ?? 35)}"></label>
+          <label class="fi">最低学历<select data-ro-edu="${k}">${['大专', '本科', '硕士'].map(x => `<option ${x === (r.rules.minEdu || '大专') ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+          <label class="fi">意向型年龄上限（没经验但求职方向对口）<input type="number" data-ro-young="${k}" value="${esc(r.rules.youngMaxAge ?? 28)}"></label>
+          <label class="fi full" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" data-ro-tz="${k}" style="width:auto" ${r.rules.requireTongzhao ? 'checked' : ''}>要求统招（全日制）学历；简历没写是否统招时，约聊中会问</label>
+          <label class="fi full" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" data-ro-tzx="${k}" style="width:auto" ${r.rules.eduSalesException ? 'checked' : ''}>在教育行业做过销售类岗位的，可以接受非统招</label>
+          <label class="fi full">相关经历关键词（职位或公司名命中即算有经验）<input data-ro-exp="${k}" value="${esc((r.rules.expKeywords || []).join('，'))}"></label>
+          <label class="fi full">相关专业关键词（加分）<input data-ro-major="${k}" value="${esc((r.rules.majorKeywords || []).join('，'))}"></label>
+          <label class="fi full">求职方向关键词<input data-ro-intent="${k}" value="${esc((r.rules.intentKeywords || []).join('，'))}"></label></div></details>` : ''}
+          <label class="fi full">约聊时依次了解（一行一个问题，AI 每条消息最多问一个）<textarea data-ro-q="${k}" style="min-height:96px">${esc((r.questions || []).map(q => q[1]).join('\n'))}</textarea></label>
+          <label class="fi full">岗位沟通要点（工作内容、要突出什么、要确认什么）<textarea data-ro-focus="${k}" style="min-height:80px">${esc(r.focus || '')}</textarea></label>
+          <label class="fi full"><span><b>岗位要求与特殊情况备注</b> <span class="small muted">— 规则判“不推荐 / 待确认”的人，AI 会按这里复核，符合放宽条件的改为推荐或待确认；只放宽，不会把规则合格的人判为不推荐；筛选标准里没勾「AI 可放宽」的项不会被放宽</span></span>
+            <textarea data-ro-notes="${k}" style="min-height:100px" placeholder="一行写一条，用大白话即可，例如：&#10;有公立学校教学经验的，年龄可以放宽到 40 岁&#10;专业不对口，但在培训机构带过 2 年以上班的也可以&#10;统招中专毕业、后来专升本或自考本科的，也可以考虑&#10;做过幼儿园老师、想转初中的，可以约来面试看看">${esc(r.notes || '')}</textarea></label>
+        </div></details>`).join('')}
+      <div class="inline-form"><button class="btn pri" id="ro-save">保存岗位配置</button><button class="btn" id="ro-re">保存并按新规则重新初筛全部</button></div></div></div>`;
   const list = v => v.split(/[,，\s]+/).map(x => x.trim()).filter(Boolean);
   // 空着不填用默认值；填 0 就是 0 分
   const numOr = (v, d) => { const n = Number(String(v).trim()); return String(v).trim() === '' || !Number.isFinite(n) ? d : n; };

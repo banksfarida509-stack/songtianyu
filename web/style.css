@@ -366,6 +366,6 @@ tbody tr:last-child td{border-bottom:0}
 .inline-form select,.inline-form input{width:auto}
 
 /* 岗位筛选标准 */
-.cr-tbl td{vertical-align:top}
+.cr-tbl{border-collapse:collapse}.cr-tbl td{vertical-align:top;padding:8px 10px;border-bottom:1px solid var(--line)}.cr-tbl input.inp,.cr-tbl select.inp{max-width:100%}
 .cr-p{display:flex;flex-direction:column;gap:2px}
 .cr-off td:not(:first-child){opacity:.45}
